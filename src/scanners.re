@@ -374,6 +374,28 @@ bufsize_t _scan_close_code_fence(const unsigned char *p)
 */
 }
 
+bufsize_t _scan_formula_block_start(const unsigned char *p)
+{
+  const unsigned char *marker = NULL;
+  const unsigned char *start = p;
+/*!re2c
+  '$$' [\r]?[\n] { return (bufsize_t)(p - start); }
+  '\\begin{' [^}\r\n\x00]+ '}' [\r]?[\n] { return (bufsize_t)(p - start); }
+  * { return 0; }
+*/
+}
+
+bufsize_t _scan_formula_block_end(const unsigned char *p)
+{
+  const unsigned char *marker = NULL;
+  const unsigned char *start = p;
+/*!re2c
+  '$$' [\r]?[\n] { return (bufsize_t)(p - start); }
+  '\\end{' [^}\r\n\x00]+ '}' [\r]?[\n] { return (bufsize_t)(p - start); }
+  * { return 0; }
+*/
+}
+
 // Returns positive value if a URL begins in a way that is potentially
 // dangerous, with javascript:, vbscript:, file:, or data:, otherwise 0.
 bufsize_t _scan_dangerous_url(const unsigned char *p)
