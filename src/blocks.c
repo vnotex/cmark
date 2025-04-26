@@ -169,6 +169,7 @@ static inline bool can_contain(cmark_node_type parent_type,
   return (parent_type == CMARK_NODE_DOCUMENT ||
           parent_type == CMARK_NODE_BLOCK_QUOTE ||
           parent_type == CMARK_NODE_ITEM ||
+          parent_type == CMARK_NODE_FOOTNOTE_DEFINITION ||
           (parent_type == CMARK_NODE_LIST && child_type == CMARK_NODE_ITEM) ||
           (parent_type == CMARK_NODE_TABLE && child_type == CMARK_NODE_TABLE_ROW) ||
           (parent_type == CMARK_NODE_TABLE_ROW && child_type == CMARK_NODE_TABLE_CELL));
@@ -386,6 +387,9 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
 
     break;
 
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    break;
+
   default:
     break;
   }
@@ -422,7 +426,8 @@ static cmark_node *add_child(cmark_parser *parser, cmark_node *parent,
 // Walk through node and all children, recursively, parsing
 // string content into inline content where appropriate.
 static void process_inlines(cmark_mem *mem, cmark_node *root,
-                            cmark_reference_map *refmap, int options) {
+                            cmark_reference_map *refmap,
+                            cmark_footnote_map *footnote_map, int options) {
   cmark_iter *iter = cmark_iter_new(root);
   cmark_node *cur;
   cmark_event_type ev_type;
@@ -435,7 +440,7 @@ static void process_inlines(cmark_mem *mem, cmark_node *root,
         if (S_type(cur) == CMARK_NODE_TABLE_CELL && cur->as.table_cell.is_delimiter) {
           continue;
         }
-        cmark_parse_inlines(mem, cur, refmap, options);
+        cmark_parse_inlines(mem, cur, refmap, footnote_map, options);
         mem->free(cur->data);
         cur->data = NULL;
         cur->len = 0;
@@ -557,7 +562,7 @@ static cmark_node *finalize_document(cmark_parser *parser) {
   else
     parser->refmap->max_ref_size = 100000;
 
-  process_inlines(parser->mem, parser->root, parser->refmap, parser->options);
+  process_inlines(parser->mem, parser->root, parser->refmap, parser->footnote_map, parser->options);
 
   cmark_strbuf_free(&parser->content);
 
@@ -726,6 +731,54 @@ static int S_scan_thematic_break(cmark_parser *parser, cmark_chunk *input,
   }
 }
 
+// Hand-written scanner for footnote definition start: [^label]:
+// Matches optional 0-3 spaces indent, [^, label chars, ]:, space/tab.
+// Returns total bytes consumed (from first_nonspace), or 0 if no match.
+// Sets *label_start and *label_end to byte offsets of the label within input.
+static bufsize_t scan_footnote_def_start(cmark_chunk *input, bufsize_t pos,
+                                         bufsize_t *label_start,
+                                         bufsize_t *label_end) {
+  bufsize_t i = pos;
+
+  // Must start with [^
+  if (i + 1 >= input->len || peek_at(input, i) != '[' ||
+      peek_at(input, i + 1) != '^')
+    return 0;
+  i += 2;
+
+  *label_start = i;
+
+  // One or more label chars (not ] and not newline)
+  if (i >= input->len || peek_at(input, i) == ']' ||
+      S_is_line_end_char(peek_at(input, i)))
+    return 0;
+
+  while (i < input->len && peek_at(input, i) != ']' &&
+         !S_is_line_end_char(peek_at(input, i))) {
+    i++;
+  }
+
+  *label_end = i;
+
+  // Must have ]:
+  if (i + 1 >= input->len || peek_at(input, i) != ']' ||
+      peek_at(input, i + 1) != ':')
+    return 0;
+  i += 2;
+
+  // At least one space or tab after ]:
+  if (i >= input->len || !S_is_space_or_tab(peek_at(input, i)))
+    return 0;
+  i++;
+
+  // Consume additional spaces/tabs
+  while (i < input->len && S_is_space_or_tab(peek_at(input, i))) {
+    i++;
+  }
+
+  return i - pos;
+}
+
 // Find first nonspace character from current offset, setting
 // parser->first_nonspace, parser->first_nonspace_column,
 // parser->indent, and parser->blank. Does not advance parser->offset.
@@ -839,6 +892,25 @@ static bool parse_node_item_prefix(cmark_parser *parser, cmark_chunk *input,
     res = true;
   }
   return res;
+}
+
+static bool parse_footnote_def_prefix(cmark_parser *parser, cmark_chunk *input,
+                                      cmark_node *container) {
+  if (parser->blank && container->first_child != NULL) {
+    S_advance_offset(parser, input, parser->first_nonspace - parser->offset,
+                     false);
+    return true;
+  }
+  if (parser->indent >=
+      container->as.footnote_def.marker_offset +
+          container->as.footnote_def.padding) {
+    S_advance_offset(parser, input,
+                     container->as.footnote_def.marker_offset +
+                         container->as.footnote_def.padding,
+                     true);
+    return true;
+  }
+  return false;
 }
 
 static bool parse_code_block_prefix(cmark_parser *parser, cmark_chunk *input,
@@ -1154,6 +1226,10 @@ static cmark_node *check_open_blocks(cmark_parser *parser, cmark_chunk *input,
       break;
     case CMARK_NODE_ITEM:
       if (!parse_node_item_prefix(parser, input, container))
+        goto done;
+      break;
+    case CMARK_NODE_FOOTNOTE_DEFINITION:
+      if (!parse_footnote_def_prefix(parser, input, container))
         goto done;
       break;
     case CMARK_NODE_CODE_BLOCK:
@@ -1588,6 +1664,35 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       (*container)->as.code.fence_length = 0;
       (*container)->as.code.fence_offset = 0;
       (*container)->as.code.info = NULL;
+    } else if (!indented &&
+               peek_at(input, parser->first_nonspace) == '[' &&
+               peek_at(input, parser->first_nonspace + 1) == '^') {
+      bufsize_t fn_label_start = 0, fn_label_end = 0;
+      bufsize_t fn_matched = scan_footnote_def_start(
+          input, parser->first_nonspace, &fn_label_start, &fn_label_end);
+      if (fn_matched) {
+        *container = add_child(parser, *container,
+                               CMARK_NODE_FOOTNOTE_DEFINITION,
+                               parser->first_nonspace + 1);
+        (*container)->as.footnote_def.marker_offset = parser->indent;
+        (*container)->as.footnote_def.padding = fn_matched;
+
+        bufsize_t label_len = fn_label_end - fn_label_start;
+        (*container)->data =
+            (unsigned char *)parser->mem->calloc(label_len + 1, 1);
+        memcpy((*container)->data, input->data + fn_label_start, label_len);
+        (*container)->data[label_len] = '\0';
+        (*container)->len = label_len;
+
+        cmark_chunk label_chunk = {(*container)->data, label_len};
+        cmark_footnote_create(parser->footnote_map, &label_chunk, *container);
+
+        S_advance_offset(parser, input,
+                         parser->first_nonspace + fn_matched - parser->offset,
+                         false);
+      } else {
+        break;
+      }
     } else if (try_opening_new_table_blocks(parser, container, input, indented)) {
       break;
     } else {

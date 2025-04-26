@@ -7,6 +7,7 @@
 #include "node.h"
 #include "parser.h"
 #include "references.h"
+#include "footnotes.h"
 #include "cmark.h"
 #include "houdini.h"
 #include "utf8.h"
@@ -47,6 +48,7 @@ typedef struct bracket {
   bool image;
   bool active;
   bool bracket_after;
+  bool inline_note;
 } bracket;
 
 #define FLAG_SKIP_HTML_CDATA        (1u << 0)
@@ -63,6 +65,7 @@ typedef struct {
   int block_offset;
   int column_offset;
   cmark_reference_map *refmap;
+  cmark_footnote_map *footnote_map;
   delimiter *last_delim;
   bracket *last_bracket;
   bufsize_t backticks[MAXBACKTICKS + 1];
@@ -80,7 +83,8 @@ static delimiter *S_insert_emph_like_inline(subject *subj, delimiter *opener,
 static int parse_inline(subject *subj, cmark_node *parent, int options);
 
 static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, subject *e,
-                             cmark_chunk *chunk, cmark_reference_map *refmap);
+                             cmark_chunk *chunk, cmark_reference_map *refmap,
+                             cmark_footnote_map *footnote_map);
 static bufsize_t subject_find_special_char(subject *subj, int options);
 
 // Create an inline with a literal string value.
@@ -195,7 +199,8 @@ static inline cmark_node *make_autolink(subject *subj, int start_column,
 }
 
 static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, subject *e,
-                             cmark_chunk *chunk, cmark_reference_map *refmap) {
+                             cmark_chunk *chunk, cmark_reference_map *refmap,
+                             cmark_footnote_map *footnote_map) {
   int i;
   e->mem = mem;
   e->input = *chunk;
@@ -205,6 +210,7 @@ static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, 
   e->block_offset = block_offset;
   e->column_offset = 0;
   e->refmap = refmap;
+  e->footnote_map = footnote_map;
   e->last_delim = NULL;
   e->last_bracket = NULL;
   for (i = 0; i <= MAXBACKTICKS; i++) {
@@ -658,6 +664,7 @@ static void push_bracket(subject *subj, bool image, cmark_node *inl_text) {
   b->previous = subj->last_bracket;
   b->position = subj->pos;
   b->bracket_after = false;
+  b->inline_note = false;
   subj->last_bracket = b;
   if (!image) {
     subj->no_link_openers = false;
@@ -1278,6 +1285,29 @@ static cmark_node *handle_close_bracket(subject *subj) {
     return make_str(subj, subj->pos - 1, subj->pos - 1, cmark_chunk_literal("]"));
   }
 
+  if (opener->inline_note) {
+    // Create INLINE_FOOTNOTE container
+    cmark_node *inl_note = make_simple(subj->mem, CMARK_NODE_INLINE_FOOTNOTE);
+    inl_note->as.footnote_ref.number = subj->footnote_map->next_number++;
+    inl_note->start_line = inl_note->end_line = subj->line;
+    inl_note->start_column = opener->inl_text->start_column;
+    inl_note->end_column = subj->pos + subj->column_offset + subj->block_offset;
+
+    cmark_node_insert_before(opener->inl_text, inl_note);
+    cmark_node *tmp = opener->inl_text->next;
+    while (tmp) {
+      cmark_node *tmpnext = tmp->next;
+      cmark_node_unlink(tmp);
+      append_child(inl_note, tmp);
+      tmp = tmpnext;
+    }
+    cmark_node_free(opener->inl_text);
+
+    process_emphasis(subj, opener->position);
+    pop_bracket(subj);
+    return NULL;
+  }
+
   // If we got here, we matched a potential link/image text.
   // Now we check to see if it's a link/image.
   is_image = opener->image;
@@ -1437,7 +1467,7 @@ static bufsize_t subject_find_special_char(subject *subj, int options) {
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
       1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1472,6 +1502,58 @@ static bufsize_t subject_find_special_char(subject *subj, int options) {
   }
 
   return subj->input.len;
+}
+
+// Parse a footnote reference [^label].
+// Assumes the subject has already consumed '[' and is pointing at '^'.
+// Returns a FOOTNOTE_REFERENCE node if label found in footnote_map, else NULL.
+static cmark_node *handle_footnote_ref(subject *subj) {
+  bufsize_t startpos = subj->pos; // pointing at '^'
+  advance(subj); // skip '^'
+  bufsize_t label_start = subj->pos;
+
+  // Scan for closing ']'
+  while (!is_eof(subj) && peek_char(subj) != ']' &&
+         !S_is_line_end_char(peek_char(subj))) {
+    advance(subj);
+  }
+
+  if (is_eof(subj) || peek_char(subj) != ']' || subj->pos == label_start) {
+    subj->pos = startpos; // restore position
+    return NULL;
+  }
+
+  bufsize_t label_end = subj->pos;
+  advance(subj); // skip ']'
+
+  cmark_chunk label = cmark_chunk_dup(&subj->input, label_start,
+                                      label_end - label_start);
+  cmark_footnote *footnote = cmark_footnote_lookup(subj->footnote_map, &label);
+  cmark_chunk_free(&label);
+
+  if (footnote == NULL) {
+    subj->pos = startpos; // restore
+    return NULL;
+  }
+
+  // Assign number if first reference
+  if (footnote->number == 0) {
+    footnote->number = subj->footnote_map->next_number++;
+    footnote->def_node->as.footnote_def.number = footnote->number;
+  }
+
+  // Create FOOTNOTE_REFERENCE node
+  cmark_node *node = make_literal(subj, CMARK_NODE_FOOTNOTE_REFERENCE,
+                                  startpos - 1, subj->pos - 1);
+  // Store label in node->data/len
+  bufsize_t label_len = label_end - label_start;
+  node->data = (unsigned char *)subj->mem->realloc(NULL, label_len + 1);
+  memcpy(node->data, subj->input.data + label_start, label_len);
+  node->data[label_len] = '\0';
+  node->len = label_len;
+  node->as.footnote_ref.number = footnote->number;
+
+  return node;
 }
 
 // Parse an inline, advancing subject, and add it as a child of parent.
@@ -1521,6 +1603,12 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     break;
   case '[':
     advance(subj);
+    if (peek_char(subj) == '^' && subj->footnote_map != NULL) {
+      new_inl = handle_footnote_ref(subj);
+      if (new_inl != NULL) {
+        break;
+      }
+    }
     new_inl = make_str(subj, subj->pos - 1, subj->pos - 1, cmark_chunk_literal("["));
     push_bracket(subj, false, new_inl);
     break;
@@ -1535,6 +1623,17 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
       push_bracket(subj, true, new_inl);
     } else {
       new_inl = make_str(subj, subj->pos - 1, subj->pos - 1, cmark_chunk_literal("!"));
+    }
+    break;
+  case '^':
+    advance(subj);
+    if (peek_char(subj) == '[' && subj->footnote_map != NULL) {
+      advance(subj); // skip '['
+      new_inl = make_str(subj, subj->pos - 2, subj->pos - 1, cmark_chunk_literal("^["));
+      push_bracket(subj, false, new_inl);
+      subj->last_bracket->inline_note = true;
+    } else {
+      new_inl = make_str(subj, subj->pos - 1, subj->pos - 1, cmark_chunk_literal("^"));
     }
     break;
   default:
@@ -1559,12 +1658,13 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
 
 // Parse inlines from parent's string_content, adding as children of parent.
 void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
-                         cmark_reference_map *refmap, int options) {
+                         cmark_reference_map *refmap,
+                         cmark_footnote_map *footnote_map, int options) {
   int internal_offset = parent->type == CMARK_NODE_HEADING ?
     parent->as.heading.internal_offset : 0;
   subject subj;
   cmark_chunk content = {parent->data, parent->len};
-  subject_from_buf(mem, parent->start_line, parent->start_column - 1 + internal_offset, &subj, &content, refmap);
+  subject_from_buf(mem, parent->start_line, parent->start_column - 1 + internal_offset, &subj, &content, refmap, footnote_map);
   cmark_chunk_rtrim(&subj.input);
 
   while (!is_eof(&subj) && parse_inline(&subj, parent, options))
@@ -1603,7 +1703,7 @@ bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
   bufsize_t matchlen = 0;
   bufsize_t beforetitle;
 
-  subject_from_buf(mem, -1, 0, &subj, input, NULL);
+  subject_from_buf(mem, -1, 0, &subj, input, NULL, NULL);
 
   // parse label:
   if (!link_label(&subj, &lab) || lab.len == 0)
