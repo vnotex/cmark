@@ -490,6 +490,23 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     }
     break;
 
+  case CMARK_NODE_WIKILINK:
+    if (entering) {
+      LIT("[[");
+      OUT((const char *)node->as.link.url, false, LITERAL);
+      if (node->first_child && node->first_child->type == (uint16_t)CMARK_NODE_TEXT &&
+          node->first_child->data != NULL) {
+        // Check if display text differs from URL
+        if (strcmp((const char *)node->first_child->data, (const char *)node->as.link.url) != 0) {
+          LIT("|");
+          OUT((const char *)node->first_child->data, false, LITERAL);
+        }
+      }
+      LIT("]]");
+      return 0; // Skip children — we already emitted display text
+    }
+    break;
+
   /* Extension nodes — no output in this renderer */
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:

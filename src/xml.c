@@ -224,6 +224,11 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
       }
       break;
 
+    case CMARK_NODE_WIKILINK:
+      cmark_strbuf_puts(xml, " destination=\"");
+      escape_xml_str(xml, node->as.link.url);
+      cmark_strbuf_putc(xml, '"');
+      break;
     case CMARK_NODE_LINK:
     case CMARK_NODE_IMAGE:
       cmark_strbuf_puts(xml, " destination=\"");

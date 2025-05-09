@@ -1556,6 +1556,93 @@ static cmark_node *handle_footnote_ref(subject *subj) {
   return node;
 }
 
+// Parse a wikilink [[target]] or [[target|display]].
+// Assumes the subject has already consumed the first '[' and is pointing at the
+// potential second '['.  Returns a WIKILINK node if valid, else NULL.
+static cmark_node *handle_wikilink(subject *subj) {
+  if (peek_char(subj) != '[') {
+    return NULL;
+  }
+
+  bufsize_t startpos = subj->pos; // position of second '['
+  advance(subj); // consume second '['
+
+  bufsize_t content_start = subj->pos;
+
+  // Scan for closing ]]
+  bufsize_t content_end = 0;
+  bool found_close = false;
+  while (!is_eof(subj)) {
+    unsigned char c = peek_char(subj);
+    if (S_is_line_end_char(c)) {
+      break;
+    }
+    if (c == ']' && subj->pos + 1 < subj->input.len &&
+        subj->input.data[subj->pos + 1] == ']') {
+      content_end = subj->pos;
+      found_close = true;
+      break;
+    }
+    advance(subj);
+  }
+
+  if (!found_close || content_end == content_start) {
+    subj->pos = startpos;
+    return NULL;
+  }
+
+  // Find first '|' to split target from display text
+  bufsize_t pipe_pos = 0;
+  bool has_pipe = false;
+  for (bufsize_t i = content_start; i < content_end; i++) {
+    if (subj->input.data[i] == '|') {
+      pipe_pos = i;
+      has_pipe = true;
+      break;
+    }
+  }
+
+  // Extract target and display text
+  const unsigned char *target;
+  bufsize_t target_len;
+  const unsigned char *display;
+  bufsize_t display_len;
+
+  if (has_pipe) {
+    target_len = pipe_pos - content_start;
+    target = subj->input.data + content_start;
+    display = subj->input.data + pipe_pos + 1;
+    display_len = content_end - pipe_pos - 1;
+  } else {
+    target_len = content_end - content_start;
+    target = subj->input.data + content_start;
+    display = target;
+    display_len = target_len;
+  }
+
+  // Create WIKILINK node (startpos - 1 is the first '[')
+  cmark_node *node = make_literal(subj, CMARK_NODE_WIKILINK,
+                                  startpos - 1, content_end + 1);
+  node->as.link.url = (unsigned char *)subj->mem->realloc(NULL, target_len + 1);
+  memcpy(node->as.link.url, target, target_len);
+  node->as.link.url[target_len] = '\0';
+  node->as.link.title = NULL;
+
+  // Create child TEXT node for display text
+  cmark_node *text = make_literal(subj, CMARK_NODE_TEXT,
+                                  content_start, content_end - 1);
+  text->data = (unsigned char *)subj->mem->realloc(NULL, display_len + 1);
+  memcpy(text->data, display, display_len);
+  text->data[display_len] = '\0';
+  text->len = display_len;
+  append_child(node, text);
+
+  // Advance past ]]
+  subj->pos = content_end + 2;
+
+  return node;
+}
+
 // Parse an inline, advancing subject, and add it as a child of parent.
 // Return 0 if no inline can be parsed, 1 otherwise.
 static int parse_inline(subject *subj, cmark_node *parent, int options) {
@@ -1603,6 +1690,11 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     break;
   case '[':
     advance(subj);
+    // Check for wikilink [[...]]
+    new_inl = handle_wikilink(subj);
+    if (new_inl != NULL) {
+      break;
+    }
     if (peek_char(subj) == '^' && subj->footnote_map != NULL) {
       new_inl = handle_footnote_ref(subj);
       if (new_inl != NULL) {

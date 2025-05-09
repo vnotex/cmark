@@ -470,7 +470,7 @@ void hierarchy(test_batch_runner *runner) {
   int max_node_type = CMARK_NODE_LAST_BLOCK > CMARK_NODE_LAST_INLINE
                           ? CMARK_NODE_LAST_BLOCK
                           : CMARK_NODE_LAST_INLINE;
-  OK(runner, max_node_type < 32, "all node types < 32");
+  OK(runner, max_node_type < 64, "all node types < 64");
 
   int list_item_flag = 1 << CMARK_NODE_ITEM;
   int top_level_blocks =

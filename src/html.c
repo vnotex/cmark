@@ -287,6 +287,19 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     }
     break;
 
+  case CMARK_NODE_WIKILINK:
+    if (entering) {
+      cmark_strbuf_puts(html, "<a class=\"wikilink\" href=\"");
+      if (node->as.link.url) {
+        escape_html(html, node->as.link.url,
+                    (bufsize_t)strlen((char *)node->as.link.url));
+      }
+      cmark_strbuf_puts(html, "\">");
+    } else {
+      cmark_strbuf_puts(html, "</a>");
+    }
+    break;
+
   case CMARK_NODE_EMPH:
     if (entering) {
       cmark_strbuf_puts(html, "<em>");

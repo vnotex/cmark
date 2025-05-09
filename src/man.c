@@ -307,6 +307,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   /* Extension nodes — no output in this renderer */
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:
+  case CMARK_NODE_WIKILINK:
   case CMARK_NODE_FORMULA_INLINE:
   case CMARK_NODE_FORMULA_BLOCK:
   case CMARK_NODE_TABLE:

@@ -86,6 +86,7 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   case CMARK_NODE_IMAGE:
   case CMARK_NODE_CUSTOM_INLINE:
   case CMARK_NODE_INLINE_FOOTNOTE:
+  case CMARK_NODE_WIKILINK:
     return cmark_node_is_inline(child);
 
   case CMARK_NODE_TABLE:
@@ -102,6 +103,7 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
       case CMARK_NODE_STRONG:
       case CMARK_NODE_LINK:
       case CMARK_NODE_IMAGE:
+      case CMARK_NODE_WIKILINK:
       case CMARK_NODE_STRIKETHROUGH:
       case CMARK_NODE_HTML_INLINE:
       case CMARK_NODE_MARK:
@@ -174,6 +176,7 @@ static void S_free_nodes(cmark_node *e) {
       break;
     case CMARK_NODE_LINK:
     case CMARK_NODE_IMAGE:
+    case CMARK_NODE_WIKILINK:
       mem->free(e->as.link.url);
       mem->free(e->as.link.title);
       break;
@@ -284,6 +287,8 @@ const char *cmark_node_get_type_string(cmark_node *node) {
     return "link";
   case CMARK_NODE_IMAGE:
     return "image";
+  case CMARK_NODE_WIKILINK:
+    return "wikilink";
   }
 
   return "<unknown>";
@@ -588,6 +593,7 @@ const char *cmark_node_get_url(cmark_node *node) {
   switch (node->type) {
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
+  case CMARK_NODE_WIKILINK:
     return node->as.link.url ? (char *)node->as.link.url : "";
   default:
     break;
@@ -604,6 +610,7 @@ int cmark_node_set_url(cmark_node *node, const char *url) {
   switch (node->type) {
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
+  case CMARK_NODE_WIKILINK:
     cmark_set_cstr(node->mem, &node->as.link.url, url);
     return 1;
   default:
@@ -621,6 +628,7 @@ const char *cmark_node_get_title(cmark_node *node) {
   switch (node->type) {
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
+  case CMARK_NODE_WIKILINK:
     return node->as.link.title ? (char *)node->as.link.title : "";
   default:
     break;
@@ -637,6 +645,7 @@ int cmark_node_set_title(cmark_node *node, const char *title) {
   switch (node->type) {
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
+  case CMARK_NODE_WIKILINK:
     cmark_set_cstr(node->mem, &node->as.link.title, title);
     return 1;
   default:

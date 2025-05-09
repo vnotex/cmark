@@ -1,20 +1,21 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "node.h"
 #include "cmark.h"
 #include "iterator.h"
 
-static const unsigned int S_leaf_mask =
-    (1u << CMARK_NODE_HTML_BLOCK) | (1u << CMARK_NODE_THEMATIC_BREAK) |
-    (1u << CMARK_NODE_CODE_BLOCK) | (1u << CMARK_NODE_TEXT) |
-    (1u << CMARK_NODE_FORMULA_BLOCK) | (1u << CMARK_NODE_FRONTMATTER) |
-    (1u << CMARK_NODE_FORMULA_INLINE) |
-    (1u << CMARK_NODE_SOFTBREAK) | (1u << CMARK_NODE_LINEBREAK) |
-    (1u << CMARK_NODE_CODE) | (1u << CMARK_NODE_HTML_INLINE) |
+static const uint64_t S_leaf_mask =
+    (1ull << CMARK_NODE_HTML_BLOCK) | (1ull << CMARK_NODE_THEMATIC_BREAK) |
+    (1ull << CMARK_NODE_CODE_BLOCK) | (1ull << CMARK_NODE_TEXT) |
+    (1ull << CMARK_NODE_FORMULA_BLOCK) | (1ull << CMARK_NODE_FRONTMATTER) |
+    (1ull << CMARK_NODE_FORMULA_INLINE) |
+    (1ull << CMARK_NODE_SOFTBREAK) | (1ull << CMARK_NODE_LINEBREAK) |
+    (1ull << CMARK_NODE_CODE) | (1ull << CMARK_NODE_HTML_INLINE) |
     /* WARNING: FOOTNOTE_REFERENCE near 32-bit limit */
-    (1u << CMARK_NODE_FOOTNOTE_REFERENCE);
+    (1ull << CMARK_NODE_FOOTNOTE_REFERENCE);
 
 cmark_iter *cmark_iter_new(cmark_node *root) {
   if (root == NULL) {
@@ -34,7 +35,7 @@ cmark_iter *cmark_iter_new(cmark_node *root) {
 void cmark_iter_free(cmark_iter *iter) { iter->mem->free(iter); }
 
 static bool S_is_leaf(cmark_node *node) {
-  return ((1u << node->type) & S_leaf_mask) != 0;
+  return ((1ull << node->type) & S_leaf_mask) != 0;
 }
 
 cmark_event_type cmark_iter_next(cmark_iter *iter) {
