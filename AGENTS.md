@@ -32,7 +32,7 @@ Python 3 is required for spec tests. Without it, only `api_test` and `parser_tes
 
 Test suites:
 - `api_test/` — C/C++ API tests (single binary)
-- `parser_test/` — Per-feature C tests (heading, strikethrough, table, link, code, image, block_quote, mark, formula_inline, formula_block)
+- `parser_test/` — Per-feature C tests (heading, strikethrough, table, link, code, image, block_quote, mark, formula_inline, formula_block, frontmatter)
 - `test/` — Python spec conformance, pathological, roundtrip, entity, smart-punct, regression tests
 - Shared-lib tests load `libcmark` via Python ctypes at runtime
 
@@ -81,7 +81,7 @@ Library target is `cmark` (builds `libcmark`). Executable target is `cmark_exe`.
 
 This fork adds node types not in upstream `commonmark/cmark`:
 `CMARK_NODE_STRIKETHROUGH`, `CMARK_NODE_MARK`, `CMARK_NODE_FORMULA_INLINE`,
-`CMARK_NODE_FORMULA_BLOCK`, `CMARK_NODE_TABLE`, `CMARK_NODE_TABLE_ROW`, `CMARK_NODE_TABLE_CELL`.
+`CMARK_NODE_FORMULA_BLOCK`, `CMARK_NODE_FRONTMATTER`, `CMARK_NODE_TABLE`, `CMARK_NODE_TABLE_ROW`, `CMARK_NODE_TABLE_CELL`.
 
 When adding new node types, update: `cmark_node_type` enum in `cmark.h`, short-name macros at bottom of `cmark.h`, `CMARK_NODE_LAST_BLOCK`/`CMARK_NODE_LAST_INLINE` sentinel values, all renderers, and `parser_test/` if applicable.
 
