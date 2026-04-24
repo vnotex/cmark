@@ -333,6 +333,9 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     }
     break;
 
+  case CMARK_NODE_FRONTMATTER:
+    break;
+
   default:
     assert(false);
     break;

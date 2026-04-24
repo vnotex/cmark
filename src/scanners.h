@@ -40,6 +40,8 @@ bufsize_t _scan_close_code_fence(const unsigned char *p);
 bufsize_t _scan_dangerous_url(const unsigned char *p);
 bufsize_t _scan_formula_block_start(const unsigned char *p);
 bufsize_t _scan_formula_block_end(const unsigned char *p);
+bufsize_t _scan_frontmatter_start(const unsigned char *p);
+bufsize_t _scan_frontmatter_end(const unsigned char *p);
 
 #define scan_scheme(c, n) _scan_at(&_scan_scheme, c, n)
 #define scan_autolink_uri(c, n) _scan_at(&_scan_autolink_uri, c, n)
@@ -67,6 +69,8 @@ bufsize_t _scan_formula_block_end(const unsigned char *p);
 #define scan_dangerous_url(c, n) _scan_at(&_scan_dangerous_url, c, n)
 #define scan_formula_block_start(c, n) _scan_at(&_scan_formula_block_start, c, n)
 #define scan_formula_block_end(c, n) _scan_at(&_scan_formula_block_end, c, n)
+#define scan_frontmatter_start(c, n) _scan_at(&_scan_frontmatter_start, c, n)
+#define scan_frontmatter_end(c, n) _scan_at(&_scan_frontmatter_end, c, n)
 
 #ifdef __cplusplus
 }
