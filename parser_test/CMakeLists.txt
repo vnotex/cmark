@@ -8,7 +8,8 @@ set(TEST_TARGETS
     formula_block_tests
     code_tests
     table_tests
-    link_tests)
+    link_tests
+    frontmatter_tests)
 
 foreach(TARGET ${TEST_TARGETS})
     add_executable(${TARGET} ${TARGET}.c test_utils.c)
