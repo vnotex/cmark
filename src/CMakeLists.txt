@@ -11,6 +11,7 @@ add_library(cmark
   cmark.c
   cmark_ctype.c
   commonmark.c
+  footnotes.c
   houdini_href_e.c
   houdini_html_e.c
   houdini_html_u.c

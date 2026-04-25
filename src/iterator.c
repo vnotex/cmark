@@ -12,7 +12,9 @@ static const int S_leaf_mask =
     (1 << CMARK_NODE_FORMULA_BLOCK) | (1 << CMARK_NODE_FRONTMATTER) |
     (1 << CMARK_NODE_FORMULA_INLINE) |
     (1 << CMARK_NODE_SOFTBREAK) | (1 << CMARK_NODE_LINEBREAK) |
-    (1 << CMARK_NODE_CODE) | (1 << CMARK_NODE_HTML_INLINE);
+    (1 << CMARK_NODE_CODE) | (1 << CMARK_NODE_HTML_INLINE) |
+    /* WARNING: FOOTNOTE_REFERENCE near 32-bit signed int limit */
+    (1 << CMARK_NODE_FOOTNOTE_REFERENCE);
 
 cmark_iter *cmark_iter_new(cmark_node *root) {
   if (root == NULL) {

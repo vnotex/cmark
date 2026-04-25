@@ -37,6 +37,7 @@ bool cmark_node_is_leaf(cmark_node *node) {
     case CMARK_NODE_CODE : return true;
     case CMARK_NODE_HTML_INLINE: return true;
     case CMARK_NODE_FORMULA_INLINE: return true;
+    case CMARK_NODE_FOOTNOTE_REFERENCE: return true;
   }
   return false;
 }
@@ -66,6 +67,7 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   case CMARK_NODE_DOCUMENT:
   case CMARK_NODE_BLOCK_QUOTE:
   case CMARK_NODE_ITEM:
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
     return cmark_node_is_block(child) && child->type != CMARK_NODE_ITEM;
 
   case CMARK_NODE_LIST:
@@ -83,6 +85,7 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
   case CMARK_NODE_CUSTOM_INLINE:
+  case CMARK_NODE_INLINE_FOOTNOTE:
     return cmark_node_is_inline(child);
 
   case CMARK_NODE_TABLE:
@@ -102,6 +105,8 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
       case CMARK_NODE_STRIKETHROUGH:
       case CMARK_NODE_HTML_INLINE:
       case CMARK_NODE_MARK:
+      case CMARK_NODE_FOOTNOTE_REFERENCE:
+      case CMARK_NODE_INLINE_FOOTNOTE:
         return true;
       default:
         return false;
@@ -162,6 +167,9 @@ static void S_free_nodes(cmark_node *e) {
     case CMARK_NODE_FORMULA_BLOCK:
     case CMARK_NODE_FRONTMATTER:
     case CMARK_NODE_TABLE_CELL:
+    case CMARK_NODE_FOOTNOTE_DEFINITION:
+    case CMARK_NODE_FOOTNOTE_REFERENCE:
+    case CMARK_NODE_INLINE_FOOTNOTE:
       mem->free(e->data);
       break;
     case CMARK_NODE_LINK:
@@ -266,6 +274,12 @@ const char *cmark_node_get_type_string(cmark_node *node) {
     return "table_row";
   case CMARK_NODE_TABLE_CELL:
     return "table_cell";
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    return "footnote_definition";
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
+    return "footnote_reference";
+  case CMARK_NODE_INLINE_FOOTNOTE:
+    return "inline_footnote";
   case CMARK_NODE_LINK:
     return "link";
   case CMARK_NODE_IMAGE:

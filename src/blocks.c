@@ -103,6 +103,7 @@ cmark_parser *cmark_parser_new_with_mem_into_root(int options, cmark_mem *mem, c
   root->flags = CMARK_NODE__OPEN;
 
   parser->refmap = cmark_reference_map_new(mem);
+  parser->footnote_map = cmark_footnote_map_new(mem);
   parser->root = root;
   parser->current = root;
   parser->line_number = 0;
@@ -136,6 +137,7 @@ void cmark_parser_free(cmark_parser *parser) {
   cmark_strbuf_free(&parser->curline);
   cmark_strbuf_free(&parser->linebuf);
   cmark_reference_map_free(parser->refmap);
+  cmark_footnote_map_free(parser->footnote_map);
   mem->free(parser);
 }
 

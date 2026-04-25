@@ -80,6 +80,16 @@ typedef struct {
   unsigned char *on_exit;
 } cmark_custom;
 
+typedef struct {
+  int marker_offset;
+  int padding;
+  int number;  // assigned during inline parsing (0 = unreferenced)
+} cmark_footnote_def;
+
+typedef struct {
+  int number;
+} cmark_footnote_ref;
+
 enum cmark_node__internal_flags {
   CMARK_NODE__OPEN = (1 << 0),
   CMARK_NODE__LAST_LINE_BLANK = (1 << 1),
@@ -119,6 +129,8 @@ struct cmark_node {
     cmark_table_row table_row;
     cmark_table_cell table_cell;
     int html_block_type;
+    cmark_footnote_def footnote_def;
+    cmark_footnote_ref footnote_ref;
   } as;
 };
 

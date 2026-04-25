@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include "references.h"
+#include "footnotes.h"
 #include "node.h"
 #include "buffer.h"
 
@@ -15,6 +16,7 @@ extern "C" {
 struct cmark_parser {
   struct cmark_mem *mem;
   struct cmark_reference_map *refmap;
+  struct cmark_footnote_map *footnote_map;
   struct cmark_node *root;
   struct cmark_node *current;
   int line_number;
