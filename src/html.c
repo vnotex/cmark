@@ -28,6 +28,8 @@ static inline void cr(cmark_strbuf *html) {
 struct render_state {
   cmark_strbuf *html;
   cmark_node *plain;
+  cmark_strbuf *footnotes_html;
+  bool in_footnote;
 };
 
 static void S_render_sourcepos(cmark_node *node, cmark_strbuf *html,
@@ -45,7 +47,7 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
                          struct render_state *state, int options) {
   cmark_node *parent;
   cmark_node *grandparent;
-  cmark_strbuf *html = state->html;
+  cmark_strbuf *html = state->in_footnote ? state->footnotes_html : state->html;
   char start_heading[] = "<h0";
   char end_heading[] = "</h0";
   bool tight;
@@ -336,6 +338,68 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
   case CMARK_NODE_FRONTMATTER:
     break;
 
+  case CMARK_NODE_FOOTNOTE_REFERENCE: {
+    int number = node->as.footnote_ref.number;
+    snprintf(buffer, BUFFER_SIZE,
+             "<sup class=\"footnote-ref\" id=\"fnref-%d\">"
+             "<a href=\"#fn-%d\">%d</a></sup>",
+             number, number, number);
+    cmark_strbuf_puts(html, buffer);
+    break;
+  }
+
+  case CMARK_NODE_FOOTNOTE_DEFINITION: {
+    int number = node->as.footnote_def.number;
+    if (number == 0)
+      return 0;
+    if (entering) {
+      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\">\n", number);
+      cmark_strbuf_puts(state->footnotes_html, buffer);
+      state->in_footnote = true;
+    } else {
+      cmark_strbuf *fn = state->footnotes_html;
+      snprintf(buffer, BUFFER_SIZE,
+               " <a href=\"#fnref-%d\" class=\"footnote-backref\">"
+               "\xe2\x86\xa9</a>",
+               number);
+      if (fn->size >= 5 &&
+          memcmp(fn->ptr + fn->size - 5, "</p>\n", 4) == 0) {
+        fn->size -= 5;
+        fn->ptr[fn->size] = 0;
+        cmark_strbuf_puts(fn, buffer);
+        cmark_strbuf_puts(fn, "</p>\n");
+      } else {
+        cmark_strbuf_puts(fn, buffer);
+        cmark_strbuf_putc(fn, '\n');
+      }
+      cmark_strbuf_puts(fn, "</li>\n");
+      state->in_footnote = false;
+    }
+    break;
+  }
+
+  case CMARK_NODE_INLINE_FOOTNOTE: {
+    int number = node->as.footnote_ref.number;
+    if (entering) {
+      snprintf(buffer, BUFFER_SIZE,
+               "<sup class=\"footnote-ref\" id=\"fnref-%d\">"
+               "<a href=\"#fn-%d\">%d</a></sup>",
+               number, number, number);
+      cmark_strbuf_puts(state->html, buffer);
+      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\">\n<p>", number);
+      cmark_strbuf_puts(state->footnotes_html, buffer);
+      state->in_footnote = true;
+    } else {
+      snprintf(buffer, BUFFER_SIZE,
+               " <a href=\"#fnref-%d\" class=\"footnote-backref\">"
+               "\xe2\x86\xa9</a></p>\n</li>\n",
+               number);
+      cmark_strbuf_puts(state->footnotes_html, buffer);
+      state->in_footnote = false;
+    }
+    break;
+  }
+
   default:
     assert(false);
     break;
@@ -348,17 +412,29 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
 char *cmark_render_html(cmark_node *root, int options) {
   char *result;
   cmark_strbuf html = CMARK_BUF_INIT(root->mem);
+  cmark_strbuf footnotes_buf = CMARK_BUF_INIT(root->mem);
   cmark_event_type ev_type;
   cmark_node *cur;
-  struct render_state state = {&html, NULL};
+  struct render_state state = {&html, NULL, &footnotes_buf, false};
   cmark_iter *iter = cmark_iter_new(root);
 
   while ((ev_type = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
     cur = cmark_iter_get_node(iter);
-    S_render_node(cur, ev_type, &state, options);
+    if (!S_render_node(cur, ev_type, &state, options)) {
+      cmark_iter_reset(iter, cur, CMARK_EVENT_EXIT);
+    }
   }
-  result = (char *)cmark_strbuf_detach(&html);
 
+  if (footnotes_buf.size > 0) {
+    cmark_strbuf_puts(&html,
+                      "<section class=\"footnotes\" data-footnotes>\n"
+                      "<hr />\n<ol>\n");
+    cmark_strbuf_put(&html, footnotes_buf.ptr, footnotes_buf.size);
+    cmark_strbuf_puts(&html, "</ol>\n</section>\n");
+  }
+  cmark_strbuf_free(&footnotes_buf);
+
+  result = (char *)cmark_strbuf_detach(&html);
   cmark_iter_free(iter);
   return result;
 }

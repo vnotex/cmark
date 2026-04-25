@@ -458,6 +458,38 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_FRONTMATTER:
     break;
 
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    if (entering) {
+      LIT("[^");
+      OUT((const char *)node->data, false, LITERAL);
+      LIT("]: ");
+      renderer->begin_content = true;
+      marker_width = (bufsize_t)(node->len + 5);
+      for (i = marker_width; i--;) {
+        cmark_strbuf_putc(renderer->prefix, ' ');
+      }
+    } else {
+      marker_width = (bufsize_t)(node->len + 5);
+      cmark_strbuf_truncate(renderer->prefix,
+                            renderer->prefix->size - marker_width);
+      CR();
+    }
+    break;
+
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
+    LIT("[^");
+    OUT((const char *)node->data, false, LITERAL);
+    LIT("]");
+    break;
+
+  case CMARK_NODE_INLINE_FOOTNOTE:
+    if (entering) {
+      LIT("^[");
+    } else {
+      LIT("]");
+    }
+    break;
+
   default:
     assert(false);
     break;

@@ -271,6 +271,39 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_FRONTMATTER:
     break;
 
+  case CMARK_NODE_FOOTNOTE_REFERENCE: {
+    char fn_buffer[20];
+    snprintf(fn_buffer, 20, "[%d]", node->as.footnote_ref.number);
+    LIT(fn_buffer);
+    break;
+  }
+
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    if (node->as.footnote_def.number == 0)
+      return 0;  // skip unreferenced
+    if (entering) {
+      CR();
+      LIT(".PP");
+      CR();
+      char fn_buffer[20];
+      snprintf(fn_buffer, 20, "[%d] ", node->as.footnote_def.number);
+      LIT(fn_buffer);
+    } else {
+      CR();
+    }
+    break;
+
+  case CMARK_NODE_INLINE_FOOTNOTE: {
+    char fn_buffer[20];
+    if (entering) {
+      snprintf(fn_buffer, 20, "[%d] (", node->as.footnote_ref.number);
+      LIT(fn_buffer);
+    } else {
+      LIT(")");
+    }
+    break;
+  }
+
   default:
     assert(false);
     break;

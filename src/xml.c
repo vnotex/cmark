@@ -254,6 +254,22 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
         cmark_strbuf_putc(xml, '"');
       }
       break;
+    case CMARK_NODE_FOOTNOTE_DEFINITION:
+      cmark_strbuf_puts(xml, " label=\"");
+      escape_xml_str(xml, node->data);
+      cmark_strbuf_putc(xml, '"');
+      break;
+    case CMARK_NODE_FOOTNOTE_REFERENCE:
+      cmark_strbuf_puts(xml, " label=\"");
+      escape_xml_str(xml, node->data);
+      cmark_strbuf_putc(xml, '"');
+      snprintf(buffer, BUFFER_SIZE, " number=\"%d\"", node->as.footnote_ref.number);
+      cmark_strbuf_puts(xml, buffer);
+      break;
+    case CMARK_NODE_INLINE_FOOTNOTE:
+      snprintf(buffer, BUFFER_SIZE, " number=\"%d\"", node->as.footnote_ref.number);
+      cmark_strbuf_puts(xml, buffer);
+      break;
     default:
       break;
     }
