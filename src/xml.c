@@ -204,12 +204,7 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     case CMARK_NODE_TABLE_CELL:
       if (node->parent && node->parent->parent &&
           node->parent->parent->type == CMARK_NODE_TABLE) {
-        int col_num = 0;
-        cmark_node *cell = node->parent->first_child;
-        while (cell && cell != node) {
-          col_num++;
-          cell = cell->next;
-        }
+        int col_num = node->as.table_cell.idx;
         if (col_num < node->parent->parent->as.table.columns_cnt) {
           switch(node->parent->parent->as.table.alignments[col_num]) {
             case CMARK_TABLE_ALIGN_LEFT:
