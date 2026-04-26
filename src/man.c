@@ -304,6 +304,16 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     break;
   }
 
+  /* Extension nodes — no output in this renderer */
+  case CMARK_NODE_STRIKETHROUGH:
+  case CMARK_NODE_MARK:
+  case CMARK_NODE_FORMULA_INLINE:
+  case CMARK_NODE_FORMULA_BLOCK:
+  case CMARK_NODE_TABLE:
+  case CMARK_NODE_TABLE_ROW:
+  case CMARK_NODE_TABLE_CELL:
+    break;
+
   default:
     assert(false);
     break;
