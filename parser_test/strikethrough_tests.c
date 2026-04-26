@@ -75,11 +75,32 @@ int test_strikethrough_not_closed() {
       CMARK_OPT_DEFAULT);
 }
 
+int test_strikethrough_simple_html() {
+  return test_html("~~strikethrough~~",
+      "<p><s>strikethrough</s></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_strikethrough_multiple_html() {
+  return test_html("~~strikethrough~~ and ~~another~~",
+      "<p><s>strikethrough</s> and <s>another</s></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_strikethrough_nested_html() {
+  return test_html("~~strikethrough *with emphasis*~~",
+      "<p><s>strikethrough <em>with emphasis</em></s></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_strikethrough_simple);
   CASE(test_strikethrough_multiple);
   CASE(test_strikethrough_nested);
   CASE(test_strikethrough_incomplete);
   CASE(test_strikethrough_not_closed);
+  CASE(test_strikethrough_simple_html);
+  CASE(test_strikethrough_multiple_html);
+  CASE(test_strikethrough_nested_html);
   return 0;
 }

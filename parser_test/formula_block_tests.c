@@ -63,6 +63,24 @@ int test_formula_block_empty() {
       CMARK_OPT_DEFAULT);
 }
 
+int test_formula_block_simple_html() {
+  return test_html("$$\nE=mc^2\n$$",
+      "<div class=\"math display\">\\[E=mc^2\n\\]</div>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_block_raw_html() {
+  return test_html("\\begin{equa}\nE=mc^2\n\\end{equa}",
+      "<div class=\"math display\">\\[E=mc^2\n\\]</div>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_block_sourcepos_html() {
+  return test_html("$$\nE=mc^2\n$$",
+      "<div class=\"math display\" data-sourcepos=\"1:1-3:2\">\\[E=mc^2\n\\]</div>\n",
+      CMARK_OPT_SOURCEPOS);
+}
+
 int main() {
   CASE(test_formula_block_simple);
   CASE(test_formula_block_raw);
@@ -70,5 +88,8 @@ int main() {
   CASE(test_formula_block_with_escape);
   CASE(test_formula_block_not_closed);
   CASE(test_formula_block_empty);
+  CASE(test_formula_block_simple_html);
+  CASE(test_formula_block_raw_html);
+  CASE(test_formula_block_sourcepos_html);
   return 0;
 }

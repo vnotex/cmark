@@ -75,11 +75,32 @@ int test_mark_not_closed() {
       CMARK_OPT_DEFAULT);
 }
 
+int test_mark_simple_html() {
+  return test_html("==mark==",
+      "<p><mark>mark</mark></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_mark_multiple_html() {
+  return test_html("==mark== and ==another==",
+      "<p><mark>mark</mark> and <mark>another</mark></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_mark_nested_html() {
+  return test_html("==mark *with emphasis*==",
+      "<p><mark>mark <em>with emphasis</em></mark></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_mark_simple);
   CASE(test_mark_multiple);
   CASE(test_mark_nested);
   CASE(test_mark_incomplete);
   CASE(test_mark_not_closed);
+  CASE(test_mark_simple_html);
+  CASE(test_mark_multiple_html);
+  CASE(test_mark_nested_html);
   return 0;
 }

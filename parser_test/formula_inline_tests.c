@@ -64,11 +64,33 @@ int test_formula_inline_empty() {
       CMARK_OPT_DEFAULT);
 }
 
+int test_formula_inline_simple_html() {
+  return test_html("$E=mc^2$",
+      "<p><span class=\"math inline\">\\(E=mc^2\\)</span></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_inline_multiple_html() {
+  return test_html("$a+b$ and $c+d$",
+      "<p><span class=\"math inline\">\\(a+b\\)</span> and "
+      "<span class=\"math inline\">\\(c+d\\)</span></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_inline_special_chars_html() {
+  return test_html("$a < b$",
+      "<p><span class=\"math inline\">\\(a < b\\)</span></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_formula_inline_simple);
   CASE(test_formula_inline_multiple);
   CASE(test_formula_inline_with_escape);
   CASE(test_formula_inline_not_closed);
   CASE(test_formula_inline_empty);
+  CASE(test_formula_inline_simple_html);
+  CASE(test_formula_inline_multiple_html);
+  CASE(test_formula_inline_special_chars_html);
   return 0;
 }

@@ -112,6 +112,18 @@ int test_frontmatter_indented() {
       CMARK_OPT_DEFAULT);
 }
 
+int test_frontmatter_simple_html() {
+  return test_html("---\ntitle: hello\n---\n\nparagraph",
+      "<p>paragraph</p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_frontmatter_empty_html() {
+  return test_html("---\n---\n",
+      "",
+      CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_frontmatter_simple);
   CASE(test_frontmatter_dots_closer);
@@ -122,5 +134,7 @@ int main() {
   CASE(test_frontmatter_four_hyphens);
   CASE(test_frontmatter_in_blockquote);
   CASE(test_frontmatter_indented);
+  CASE(test_frontmatter_simple_html);
+  CASE(test_frontmatter_empty_html);
   return 0;
 }

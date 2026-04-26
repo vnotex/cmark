@@ -274,6 +274,174 @@ int test_table_with_inline_markdown() {
     CMARK_OPT_SOURCEPOS);
 }
 
+int test_table_basic_html() {
+  return test_html(
+    "the text before the table\n\n"
+    "| foo | bar | zoo |\n"
+    "| :--- | :---: | ---: |\n"
+    "| baz | bim | xyz |\n"
+    "the text after the table",
+    "<p>the text before the table</p>\n"
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th style=\"text-align: left\"> foo</th>\n"
+    "<th style=\"text-align: center\"> bar</th>\n"
+    "<th style=\"text-align: right\"> zoo</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td style=\"text-align: left\"> baz</td>\n"
+    "<td style=\"text-align: center\"> bim</td>\n"
+    "<td style=\"text-align: right\"> xyz</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n"
+    "<p>the text after the table</p>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_alignments_html() {
+  return test_html(
+    "| left | center | right |\n"
+    "|:-----|:------:|------:|\n"
+    "| a    |    b   |     c |",
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th style=\"text-align: left\"> left</th>\n"
+    "<th style=\"text-align: center\"> center</th>\n"
+    "<th style=\"text-align: right\"> right</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td style=\"text-align: left\"> a</td>\n"
+    "<td style=\"text-align: center\">    b</td>\n"
+    "<td style=\"text-align: right\">     c</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_no_alignment_html() {
+  return test_html(
+    "| a | b |\n"
+    "| --- | --- |\n"
+    "|  | d |",
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th> a</th>\n"
+    "<th> b</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td></td>\n"
+    "<td> d</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_sourcepos_html() {
+  return test_html(
+    "the text before the table\n\n"
+    "| foo | bar | zoo |\n"
+    "| :--- | :---: | ---: |\n"
+    "| baz | bim | xyz |\n"
+    "the text after the table",
+    "<p data-sourcepos=\"1:1-1:25\">the text before the table</p>\n"
+    "<table data-sourcepos=\"3:1-5:19\">\n"
+    "<thead>\n"
+    "<tr data-sourcepos=\"3:1-3:19\">\n"
+    "<th style=\"text-align: left\" data-sourcepos=\"3:2-3:6\"> foo</th>\n"
+    "<th style=\"text-align: center\" data-sourcepos=\"3:8-3:12\"> bar</th>\n"
+    "<th style=\"text-align: right\" data-sourcepos=\"3:14-3:18\"> zoo</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr data-sourcepos=\"5:1-5:19\">\n"
+    "<td style=\"text-align: left\" data-sourcepos=\"5:2-5:6\"> baz</td>\n"
+    "<td style=\"text-align: center\" data-sourcepos=\"5:8-5:12\"> bim</td>\n"
+    "<td style=\"text-align: right\" data-sourcepos=\"5:14-5:18\"> xyz</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n"
+    "<p data-sourcepos=\"6:1-6:24\">the text after the table</p>\n",
+    CMARK_OPT_SOURCEPOS);
+}
+
+int test_table_inline_html() {
+  return test_html(
+    "| *em* | **strong** |\n"
+    "| --- | --- |\n"
+    "| \x60" "code\x60 | [link](url) |",
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th> <em>em</em></th>\n"
+    "<th> <strong>strong</strong></th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td> <code>code</code></td>\n"
+    "<td> <a href=\"url\">link</a></td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_empty_cells_html() {
+  return test_html(
+    "| a | b |\n"
+    "| --- | --- |\n"
+    "|  | d |",
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th> a</th>\n"
+    "<th> b</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td></td>\n"
+    "<td> d</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_escaped_pipes_html() {
+  return test_html(
+    "| a \\| b | c |\n"
+    "| --- | --- |\n"
+    "| d | e \\| f |",
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th> a | b</th>\n"
+    "<th> c</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td> d</td>\n"
+    "<td> e | f</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_table_basic);
   CASE(test_table_alignments);
@@ -284,5 +452,12 @@ int main() {
   CASE(test_table_no_leading_pipe);
   CASE(test_table_mismatched_columns);
   CASE(test_table_with_inline_markdown);
+  CASE(test_table_basic_html);
+  CASE(test_table_alignments_html);
+  CASE(test_table_no_alignment_html);
+  CASE(test_table_sourcepos_html);
+  CASE(test_table_inline_html);
+  CASE(test_table_empty_cells_html);
+  CASE(test_table_escaped_pipes_html);
   return 0;
 }
