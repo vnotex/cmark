@@ -9,7 +9,8 @@ set(TEST_TARGETS
     code_tests
     table_tests
     link_tests
-    frontmatter_tests)
+    frontmatter_tests
+    footnote_tests)
 
 foreach(TARGET ${TEST_TARGETS})
     add_executable(${TARGET} ${TARGET}.c test_utils.c)
