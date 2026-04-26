@@ -400,6 +400,89 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     break;
   }
 
+  case CMARK_NODE_TABLE:
+    if (entering) {
+      cr(html);
+      cmark_strbuf_puts(html, "<table");
+      S_render_sourcepos(node, html, options);
+      cmark_strbuf_puts(html, ">\n");
+    } else {
+      if (node->last_child &&
+          node->last_child->as.table_row.type == CMARK_TABLE_ROW_TYPE_DATA) {
+        cmark_strbuf_puts(html, "</tbody>\n");
+      }
+      cmark_strbuf_puts(html, "</table>\n");
+    }
+    break;
+
+  case CMARK_NODE_TABLE_ROW:
+    switch (node->as.table_row.type) {
+    case CMARK_TABLE_ROW_TYPE_HEADER:
+      if (entering) {
+        cmark_strbuf_puts(html, "<thead>\n<tr");
+        S_render_sourcepos(node, html, options);
+        cmark_strbuf_puts(html, ">\n");
+      } else {
+        cmark_strbuf_puts(html, "</tr>\n</thead>\n");
+      }
+      break;
+    case CMARK_TABLE_ROW_TYPE_DELIMITER:
+      if (entering) {
+        return 0;
+      }
+      break;
+    case CMARK_TABLE_ROW_TYPE_DATA:
+      if (entering) {
+        if (node->prev &&
+            node->prev->as.table_row.type != CMARK_TABLE_ROW_TYPE_DATA) {
+          cmark_strbuf_puts(html, "<tbody>\n");
+        }
+        cmark_strbuf_puts(html, "<tr");
+        S_render_sourcepos(node, html, options);
+        cmark_strbuf_puts(html, ">\n");
+      } else {
+        cmark_strbuf_puts(html, "</tr>\n");
+      }
+      break;
+    }
+    break;
+
+  case CMARK_NODE_TABLE_CELL: {
+    const char *tag = (node->parent->as.table_row.type ==
+                       CMARK_TABLE_ROW_TYPE_HEADER) ? "th" : "td";
+    if (entering) {
+      cr(html);
+      cmark_strbuf_puts(html, "<");
+      cmark_strbuf_puts(html, tag);
+      if (node->parent && node->parent->parent &&
+          node->parent->parent->type == CMARK_NODE_TABLE) {
+        int col = node->as.table_cell.idx;
+        if (col < node->parent->parent->as.table.columns_cnt) {
+          switch (node->parent->parent->as.table.alignments[col]) {
+          case CMARK_TABLE_ALIGN_LEFT:
+            cmark_strbuf_puts(html, " style=\"text-align: left\"");
+            break;
+          case CMARK_TABLE_ALIGN_CENTER:
+            cmark_strbuf_puts(html, " style=\"text-align: center\"");
+            break;
+          case CMARK_TABLE_ALIGN_RIGHT:
+            cmark_strbuf_puts(html, " style=\"text-align: right\"");
+            break;
+          case CMARK_TABLE_ALIGN_NONE:
+            break;
+          }
+        }
+      }
+      S_render_sourcepos(node, html, options);
+      cmark_strbuf_putc(html, '>');
+    } else {
+      cmark_strbuf_puts(html, "</");
+      cmark_strbuf_puts(html, tag);
+      cmark_strbuf_puts(html, ">\n");
+    }
+    break;
+  }
+
   case CMARK_NODE_FORMULA_INLINE:
     cmark_strbuf_puts(html, "<span class=\"math inline\">\\(");
     cmark_strbuf_put(html, node->data, node->len);
