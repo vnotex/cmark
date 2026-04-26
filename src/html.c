@@ -400,6 +400,21 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     break;
   }
 
+  case CMARK_NODE_FORMULA_INLINE:
+    cmark_strbuf_puts(html, "<span class=\"math inline\">\\(");
+    cmark_strbuf_put(html, node->data, node->len);
+    cmark_strbuf_puts(html, "\\)</span>");
+    break;
+
+  case CMARK_NODE_FORMULA_BLOCK:
+    cr(html);
+    cmark_strbuf_puts(html, "<div class=\"math display\"");
+    S_render_sourcepos(node, html, options);
+    cmark_strbuf_puts(html, ">\\[");
+    cmark_strbuf_put(html, node->data, node->len);
+    cmark_strbuf_puts(html, "\\]</div>\n");
+    break;
+
   default:
     assert(false);
     break;

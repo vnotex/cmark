@@ -10,6 +10,7 @@
  * @return 1 if the actual output matches expected output, 0 otherwise
  */
 int test_xml(const char *markdown, const char *expected_xml, int options);
+int test_html(const char *markdown, const char *expected_html, int options);
 
 #define CASE(func) do { if ((func)() <= 0) return -1; } while (0)
 

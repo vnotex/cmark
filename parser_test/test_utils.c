@@ -23,3 +23,21 @@ int test_xml(const char *markdown, const char *expected_xml, int options) {
     cmark_node_free(doc);
     return ret;
 }
+
+int test_html(const char *markdown, const char *expected_html, int options) {
+    cmark_node *doc = cmark_parse_document(markdown, strlen(markdown), options);
+    char *actual_html = cmark_render_html(doc, options);
+
+    int ret = 1;
+    if (strlen(actual_html) != strlen(expected_html) ||
+        strcmp(actual_html, expected_html) != 0) {
+        fprintf(stderr,
+            "Test failed!\nExpected:\n%s\nActual:\n%s\n",
+            expected_html, actual_html);
+        ret = 0;
+    }
+
+    free(actual_html);
+    cmark_node_free(doc);
+    return ret;
+}
