@@ -353,7 +353,7 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     if (number == 0)
       return 0;
     if (entering) {
-      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\">\n", number);
+      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\" value=\"%d\">\n", number, number);
       cmark_strbuf_puts(state->footnotes_html, buffer);
       state->in_footnote = true;
     } else {
@@ -386,7 +386,7 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
                "<a href=\"#fn-%d\">%d</a></sup>",
                number, number, number);
       cmark_strbuf_puts(state->html, buffer);
-      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\">\n<p>", number);
+      snprintf(buffer, BUFFER_SIZE, "<li id=\"fn-%d\" value=\"%d\">\n<p>", number, number);
       cmark_strbuf_puts(state->footnotes_html, buffer);
       state->in_footnote = true;
     } else {
