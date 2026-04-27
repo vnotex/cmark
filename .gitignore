@@ -40,3 +40,5 @@ cmark
 
 # Clangd
 .cache/*
+
+.sisyphus
