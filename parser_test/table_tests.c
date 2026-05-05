@@ -442,6 +442,67 @@ int test_table_escaped_pipes_html() {
     CMARK_OPT_DEFAULT);
 }
 
+int test_table_in_list_item() {
+  return test_xml(
+    "- text\n\n"
+    "    | header |\n"
+    "    |:---|\n"
+    "    | data |",
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE document SYSTEM \"CommonMark.dtd\">\n"
+    "<document xmlns=\"http://commonmark.org/xml/1.0\">\n"
+    "  <list type=\"bullet\" tight=\"false\">\n"
+    "    <item>\n"
+    "      <paragraph>\n"
+    "        <text xml:space=\"preserve\">text</text>\n"
+    "      </paragraph>\n"
+    "      <table columns=\"1\">\n"
+    "        <table_row type=\"header\">\n"
+    "          <table_cell align=\"left\">\n"
+    "            <text xml:space=\"preserve\"> header</text>\n"
+    "          </table_cell>\n"
+    "        </table_row>\n"
+    "        <table_row type=\"delimiter\">\n"
+    "          <table_cell align=\"left\" />\n"
+    "        </table_row>\n"
+    "        <table_row type=\"data\">\n"
+    "          <table_cell align=\"left\">\n"
+    "            <text xml:space=\"preserve\"> data</text>\n"
+    "          </table_cell>\n"
+    "        </table_row>\n"
+    "      </table>\n"
+    "    </item>\n"
+    "  </list>\n"
+    "</document>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_in_list_item_html() {
+  return test_html(
+    "- text\n\n"
+    "    | header |\n"
+    "    |:---|\n"
+    "    | data |",
+    "<ul>\n"
+    "<li>\n"
+    "<p>text</p>\n"
+    "<table>\n"
+    "<thead>\n"
+    "<tr>\n"
+    "<th style=\"text-align: left\"> header</th>\n"
+    "</tr>\n"
+    "</thead>\n"
+    "<tbody>\n"
+    "<tr>\n"
+    "<td style=\"text-align: left\"> data</td>\n"
+    "</tr>\n"
+    "</tbody>\n"
+    "</table>\n"
+    "</li>\n"
+    "</ul>\n",
+    CMARK_OPT_DEFAULT);
+}
+
 int main() {
   CASE(test_table_basic);
   CASE(test_table_alignments);
@@ -459,5 +520,7 @@ int main() {
   CASE(test_table_inline_html);
   CASE(test_table_empty_cells_html);
   CASE(test_table_escaped_pipes_html);
+  CASE(test_table_in_list_item);
+  CASE(test_table_in_list_item_html);
   return 0;
 }
