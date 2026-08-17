@@ -360,6 +360,57 @@ static int test_image_in_block_quote_urlpos() {
         CMARK_OPT_SOURCEPOS);
 }
 
+// The two corrections above have to compose: a destination that wraps onto a
+// continuation line, INSIDE a container that strips a prefix from that line.
+//
+// The newline is consumed by a scanner rather than by parse_inline(), so the
+// continuation column is derived here rather than by handle_newline(), and it
+// must still carry block_offset. Getting only one of the two right leaves the
+// span short by the prefix width, which a consumer mapping these coordinates
+// back onto the original text has no way to detect. Note the image's span
+// matches its enclosing paragraph's end in both cases -- that is the invariant.
+static int test_image_multiline_destination_in_container() {
+    int passed = 1;
+
+    if (!test_xml("> ![alt](\n> img.png)\n",
+                  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                  "<!DOCTYPE document SYSTEM \"CommonMark.dtd\">\n"
+                  "<document sourcepos=\"1:1-2:10\" xmlns=\"http://commonmark.org/xml/1.0\">\n"
+                  "  <block_quote sourcepos=\"1:1-2:10\">\n"
+                  "    <paragraph sourcepos=\"1:3-2:10\">\n"
+                  "      <image sourcepos=\"1:3-2:10\" destination=\"img.png\" urlpos=\"2:3-2:9\">\n"
+                  "        <text sourcepos=\"1:5-1:7\" xml:space=\"preserve\">alt</text>\n"
+                  "      </image>\n"
+                  "    </paragraph>\n"
+                  "  </block_quote>\n"
+                  "</document>\n",
+                  CMARK_OPT_SOURCEPOS)) {
+        passed = 0;
+    }
+
+    // Same shape in a list item, where the stripped prefix is indentation
+    // rather than a marker character.
+    if (!test_xml("- ![alt](\n  img.png)\n",
+                  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                  "<!DOCTYPE document SYSTEM \"CommonMark.dtd\">\n"
+                  "<document sourcepos=\"1:1-2:10\" xmlns=\"http://commonmark.org/xml/1.0\">\n"
+                  "  <list sourcepos=\"1:1-2:10\" type=\"bullet\" tight=\"true\">\n"
+                  "    <item sourcepos=\"1:1-2:10\">\n"
+                  "      <paragraph sourcepos=\"1:3-2:10\">\n"
+                  "        <image sourcepos=\"1:3-2:10\" destination=\"img.png\" urlpos=\"2:3-2:9\">\n"
+                  "          <text sourcepos=\"1:5-1:7\" xml:space=\"preserve\">alt</text>\n"
+                  "        </image>\n"
+                  "      </paragraph>\n"
+                  "    </item>\n"
+                  "  </list>\n"
+                  "</document>\n",
+                  CMARK_OPT_SOURCEPOS)) {
+        passed = 0;
+    }
+
+    return passed;
+}
+
 int main() {
     CASE(test_basic_image);
     CASE(test_image_with_title);
@@ -380,5 +431,6 @@ int main() {
     CASE(test_image_size_urlpos);
     CASE(test_image_reference_has_no_urlpos);
     CASE(test_image_in_block_quote_urlpos);
+    CASE(test_image_multiline_destination_in_container);
     return 0;
 }

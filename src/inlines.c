@@ -323,9 +323,10 @@ static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int match
 // for byte offset `from` (with `from <= off`).
 //
 // When the span crosses one or more newlines the byte lies on a continuation
-// line, whose column is measured from the start of the (prefix-stripped)
-// line -- matching the convention of `adjust_subj_node_newlines()`, which does
-// not apply `block_offset` to continuation lines.
+// line, whose column is measured from the start of that line's content plus
+// `block_offset` -- the width of the container prefix the block layer stripped.
+// That matches what the enclosing paragraph reports for the same position, and
+// what a consumer mapping these coordinates back onto the original text needs.
 static void subj_line_column_at(subject *subj, bufsize_t from, bufsize_t off,
                                 int *p_line, int *p_column) {
   int since_newline = 0;
@@ -337,7 +338,7 @@ static void subj_line_column_at(subject *subj, bufsize_t from, bufsize_t off,
                      : 0;
   if (newlines) {
     *p_line = subj->line + newlines;
-    *p_column = since_newline + 1;
+    *p_column = since_newline + 1 + subj->block_offset;
   } else {
     *p_line = subj->line;
     *p_column = (int)off + 1 + subj->column_offset + subj->block_offset;
