@@ -253,6 +253,12 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
         cmark_strbuf_puts(xml, tbuf);
         cmark_strbuf_putc(xml, '"');
       }
+      if (options & CMARK_OPT_SOURCEPOS && node->as.link.url_start_line != 0) {
+        snprintf(buffer, BUFFER_SIZE, " urlpos=\"%d:%d-%d:%d\"",
+                 node->as.link.url_start_line, node->as.link.url_start_column,
+                 node->as.link.url_end_line, node->as.link.url_end_column);
+        cmark_strbuf_puts(xml, buffer);
+      }
       break;
     case CMARK_NODE_FOOTNOTE_DEFINITION:
       cmark_strbuf_puts(xml, " label=\"");

@@ -318,6 +318,46 @@ static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int match
   }
 }
 
+// Compute the 1-based source line and column of the byte at `off` in
+// `subj->input`, given that `subj->line` and `subj->column_offset` are accurate
+// for byte offset `from` (with `from <= off`).
+//
+// When the span crosses one or more newlines the byte lies on a continuation
+// line, whose column is measured from the start of the (prefix-stripped)
+// line -- matching the convention of `adjust_subj_node_newlines()`, which does
+// not apply `block_offset` to continuation lines.
+static void subj_line_column_at(subject *subj, bufsize_t from, bufsize_t off,
+                                int *p_line, int *p_column) {
+  int since_newline = 0;
+  // `off` may sit just before `from` (a shortcut reference link rewinds
+  // `subj->pos` to the byte after `]`); such a byte is necessarily on the
+  // reference line, so the plain formula applies.
+  int newlines = off > from
+                     ? count_newlines(subj, from, off - from, &since_newline)
+                     : 0;
+  if (newlines) {
+    *p_line = subj->line + newlines;
+    *p_column = since_newline + 1;
+  } else {
+    *p_line = subj->line;
+    *p_column = (int)off + 1 + subj->column_offset + subj->block_offset;
+  }
+}
+
+// Bring `subj`'s `line` and `column_offset` up to date after a span of input in
+// [`from`, `subj->pos`) was consumed by a scanner rather than by
+// `parse_inline()` (which is what maintains them for ordinary text).
+static void subj_catch_up_newlines(subject *subj, bufsize_t from) {
+  int since_newline = 0;
+  int newlines = subj->pos > from
+                     ? count_newlines(subj, from, subj->pos - from, &since_newline)
+                     : 0;
+  if (newlines) {
+    subj->line += newlines;
+    subj->column_offset = -subj->pos + since_newline;
+  }
+}
+
 // Try to process a backtick code span that began with a
 // span of ticks of length openticklength length (already
 // parsed).  Return 0 if you don't find matching closing
@@ -1261,8 +1301,10 @@ static bufsize_t manual_scan_link_url(cmark_chunk *input, bufsize_t offset,
 
 // Return a link, an image, or a literal close bracket.
 static cmark_node *handle_close_bracket(subject *subj) {
-  bufsize_t initial_pos, after_link_text_pos;
+  bufsize_t initial_pos, after_link_text_pos = 0;
   bufsize_t endurl, starttitle, endtitle, endall;
+  bufsize_t starturl = 0;
+  bool has_url_pos = false;
   bufsize_t sps, n;
   cmark_reference *ref = NULL;
   cmark_chunk url_chunk, title_chunk;
@@ -1327,7 +1369,8 @@ static cmark_node *handle_close_bracket(subject *subj) {
                                  &url_chunk)) > -1)) {
 
     // try to parse an explicit link:
-    endurl = subj->pos + 1 + sps + n;
+    starturl = subj->pos + 1 + sps;
+    endurl = starturl + n;
     starttitle = endurl + scan_spacechars(&subj->input, endurl);
 
     // ensure there are spaces btw url and title
@@ -1358,6 +1401,10 @@ static cmark_node *handle_close_bracket(subject *subj) {
       title = cmark_clean_title(subj->mem, &title_chunk);
       cmark_chunk_free(&url_chunk);
       cmark_chunk_free(&title_chunk);
+      // An empty destination (`[a]()`) spans no bytes, so there is no inclusive
+      // end byte to report; leave the position unset rather than emit a
+      // reversed range. `<>` does span bytes and keeps a position.
+      has_url_pos = endurl > starturl;
       goto match;
 
     } else {
@@ -1408,9 +1455,26 @@ match:
   inl->as.link.title = title;
   inl->as.link.width = width;
   inl->as.link.height = height;
-  inl->start_line = inl->end_line = subj->line;
+  // The link text's newlines were consumed by parse_inline(), so subj->line and
+  // subj->column_offset are accurate as of `after_link_text_pos`. Derive every
+  // position below from that reference point before mutating the subject.
+  if (has_url_pos) {
+    subj_line_column_at(subj, after_link_text_pos, starturl,
+                        &inl->as.link.url_start_line,
+                        &inl->as.link.url_start_column);
+    subj_line_column_at(subj, after_link_text_pos, endurl - 1,
+                        &inl->as.link.url_end_line,
+                        &inl->as.link.url_end_column);
+  }
+  // Do NOT collapse the start onto the line where parsing finished: a link or
+  // image may legally span several lines.
+  inl->start_line = opener->inl_text->start_line;
   inl->start_column = opener->inl_text->start_column;
-  inl->end_column = subj->pos + subj->column_offset + subj->block_offset;
+  subj_line_column_at(subj, after_link_text_pos, subj->pos - 1, &inl->end_line,
+                      &inl->end_column);
+  // The destination, title and reference label are consumed by scanners, not by
+  // parse_inline(), so any newlines they contain still have to be accounted for.
+  subj_catch_up_newlines(subj, after_link_text_pos);
   cmark_node_insert_before(opener->inl_text, inl);
   // Add link text:
   tmp = opener->inl_text->next;

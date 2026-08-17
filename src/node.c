@@ -655,6 +655,41 @@ int cmark_node_set_title(cmark_node *node, const char *title) {
   return 0;
 }
 
+static int S_is_link_like(cmark_node *node) {
+  return node != NULL &&
+         (node->type == CMARK_NODE_LINK || node->type == CMARK_NODE_IMAGE);
+}
+
+int cmark_node_get_image_width(cmark_node *node) {
+  if (node == NULL || node->type != CMARK_NODE_IMAGE) {
+    return 0;
+  }
+  return node->as.link.width;
+}
+
+int cmark_node_get_image_height(cmark_node *node) {
+  if (node == NULL || node->type != CMARK_NODE_IMAGE) {
+    return 0;
+  }
+  return node->as.link.height;
+}
+
+int cmark_node_get_url_start_line(cmark_node *node) {
+  return S_is_link_like(node) ? node->as.link.url_start_line : 0;
+}
+
+int cmark_node_get_url_start_column(cmark_node *node) {
+  return S_is_link_like(node) ? node->as.link.url_start_column : 0;
+}
+
+int cmark_node_get_url_end_line(cmark_node *node) {
+  return S_is_link_like(node) ? node->as.link.url_end_line : 0;
+}
+
+int cmark_node_get_url_end_column(cmark_node *node) {
+  return S_is_link_like(node) ? node->as.link.url_end_column : 0;
+}
+
 const char *cmark_node_get_on_enter(cmark_node *node) {
   if (node == NULL) {
     return NULL;

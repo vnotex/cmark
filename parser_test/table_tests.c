@@ -264,7 +264,7 @@ int test_table_with_inline_markdown() {
     "      </table_cell>\n"
     "      <table_cell sourcepos=\"3:11-3:23\" align=\"none\">\n"
     "        <text sourcepos=\"3:11-3:11\" xml:space=\"preserve\"> </text>\n"
-    "        <link sourcepos=\"3:12-3:22\" destination=\"url\">\n"
+    "        <link sourcepos=\"3:12-3:22\" destination=\"url\" urlpos=\"3:19-3:21\">\n"
     "          <text sourcepos=\"3:13-3:16\" xml:space=\"preserve\">link</text>\n"
     "        </link>\n"
     "      </table_cell>\n"

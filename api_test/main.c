@@ -1032,7 +1032,7 @@ static void source_pos(test_batch_runner *runner) {
                       "    <text sourcepos=\"4:1-4:6\" xml:space=\"preserve\">there </text>\n"
                       "    <code sourcepos=\"4:7-4:10\" xml:space=\"preserve\">hi</code>\n"
                       "    <text sourcepos=\"4:11-4:14\" xml:space=\"preserve\"> -- </text>\n"
-                      "    <link sourcepos=\"4:15-4:41\" destination=\"www.google.com\" title=\"ok\">\n"
+                      "    <link sourcepos=\"4:15-4:41\" destination=\"www.google.com\" title=\"ok\" urlpos=\"4:22-4:35\">\n"
                       "      <text sourcepos=\"4:16-4:19\" xml:space=\"preserve\">okay</text>\n"
                       "    </link>\n"
                       "    <text sourcepos=\"4:42-4:42\" xml:space=\"preserve\">.</text>\n"
@@ -1050,7 +1050,7 @@ static void source_pos(test_batch_runner *runner) {
                       "        <paragraph sourcepos=\"9:6-10:20\">\n"
                       "          <text sourcepos=\"9:6-9:15\" xml:space=\"preserve\">Yes, okay.</text>\n"
                       "          <softbreak />\n"
-                      "          <image sourcepos=\"10:6-10:20\" destination=\"hi\" title=\"yes\">\n"
+                      "          <image sourcepos=\"10:6-10:20\" destination=\"hi\" title=\"yes\" urlpos=\"10:12-10:13\">\n"
                       "            <text sourcepos=\"10:8-10:9\" xml:space=\"preserve\">ok</text>\n"
                       "          </image>\n"
                       "        </paragraph>\n"
@@ -1154,6 +1154,134 @@ static void ref_source_pos(test_batch_runner *runner) {
   cmark_node_free(doc);
 }
 
+// Returns the first node of `type` in `doc`, or NULL.
+static cmark_node *first_node_of_type(cmark_node *doc, cmark_node_type type) {
+  cmark_iter *iter = cmark_iter_new(doc);
+  cmark_node *found = NULL;
+  cmark_event_type ev;
+
+  while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    cmark_node *cur = cmark_iter_get_node(iter);
+    if (ev == CMARK_EVENT_ENTER && cmark_node_get_type(cur) == type) {
+      found = cur;
+      break;
+    }
+  }
+
+  cmark_iter_free(iter);
+  return found;
+}
+
+// The image size and raw-destination accessors: vnote's editor uses these to
+// scale in-place previews and to rewrite destinations in the raw text, so they
+// have to be reachable without rendering to XML.
+static void image_size_and_url_pos(test_batch_runner *runner) {
+  static const struct {
+    const char *markdown;
+    int width;
+    int height;
+    int url_start_column;
+    int url_end_column;
+    const char *desc;
+  } cases[] = {
+    {"![a](i.png)\n", 0, 0, 6, 10, "unsized inline image"},
+    {"![a](i.png =500x)\n", 500, 0, 6, 10, "width only"},
+    {"![a](i.png =500x300)\n", 500, 300, 6, 10, "width and height"},
+    {"![a](i.png =x300)\n", 0, 300, 6, 10, "height only"},
+    // The raw span keeps the escape, the angle brackets and the entity, all of
+    // which cmark_node_get_url() has already resolved away.
+    {"![a](a\\_b.png)\n", 0, 0, 6, 13, "escaped destination"},
+    {"![a](<a b.png>)\n", 0, 0, 6, 14, "angle-bracketed destination"},
+    {"![a](a&amp;b.png)\n", 0, 0, 6, 16, "entity destination"},
+    // No bytes to point at.
+    {"![a]()\n", 0, 0, 0, 0, "empty destination"},
+    {"![a][r]\n\n[r]: i.png\n", 0, 0, 0, 0, "reference-style image"},
+  };
+  const size_t n = sizeof(cases) / sizeof(cases[0]);
+  size_t i;
+
+  for (i = 0; i < n; ++i) {
+    // Deliberately CMARK_OPT_DEFAULT: source coordinates are recorded during
+    // parsing, and CMARK_OPT_SOURCEPOS only controls renderer emission.
+    cmark_node *doc = cmark_parse_document(cases[i].markdown,
+                                           strlen(cases[i].markdown),
+                                           CMARK_OPT_DEFAULT);
+    cmark_node *img = first_node_of_type(doc, CMARK_NODE_IMAGE);
+    OK(runner, img != NULL, "%s: image found", cases[i].desc);
+    if (img != NULL) {
+      INT_EQ(runner, cmark_node_get_image_width(img), cases[i].width,
+             "%s: width", cases[i].desc);
+      INT_EQ(runner, cmark_node_get_image_height(img), cases[i].height,
+             "%s: height", cases[i].desc);
+      INT_EQ(runner, cmark_node_get_url_start_column(img),
+             cases[i].url_start_column, "%s: url start column", cases[i].desc);
+      INT_EQ(runner, cmark_node_get_url_end_column(img),
+             cases[i].url_end_column, "%s: url end column", cases[i].desc);
+      INT_EQ(runner, cmark_node_get_url_start_line(img),
+             cases[i].url_start_column ? 1 : 0, "%s: url start line",
+             cases[i].desc);
+      INT_EQ(runner, cmark_node_get_url_end_line(img),
+             cases[i].url_end_column ? 1 : 0, "%s: url end line",
+             cases[i].desc);
+    }
+    cmark_node_free(doc);
+  }
+
+  // Nodes that are not links or images -- including wikilinks, whose distinct
+  // syntax never populates these fields -- report nothing, and neither does
+  // NULL.
+  {
+    static const char markdown[] = "text [[wiki]]\n";
+    cmark_node *doc =
+        cmark_parse_document(markdown, sizeof(markdown) - 1, CMARK_OPT_DEFAULT);
+    cmark_node *text = first_node_of_type(doc, CMARK_NODE_TEXT);
+    OK(runner, text != NULL, "text node found");
+    INT_EQ(runner, cmark_node_get_image_width(text), 0, "width of non-image");
+    INT_EQ(runner, cmark_node_get_image_height(text), 0, "height of non-image");
+    INT_EQ(runner, cmark_node_get_url_start_line(text), 0,
+           "url start line of non-link");
+    INT_EQ(runner, cmark_node_get_url_start_column(text), 0,
+           "url start column of non-link");
+    INT_EQ(runner, cmark_node_get_url_end_line(text), 0,
+           "url end line of non-link");
+    INT_EQ(runner, cmark_node_get_url_end_column(text), 0,
+           "url end column of non-link");
+    cmark_node_free(doc);
+  }
+
+  INT_EQ(runner, cmark_node_get_image_width(NULL), 0, "width of NULL");
+  INT_EQ(runner, cmark_node_get_image_height(NULL), 0, "height of NULL");
+  INT_EQ(runner, cmark_node_get_url_start_line(NULL), 0, "url start line of NULL");
+  INT_EQ(runner, cmark_node_get_url_start_column(NULL), 0,
+         "url start column of NULL");
+  INT_EQ(runner, cmark_node_get_url_end_line(NULL), 0, "url end line of NULL");
+  INT_EQ(runner, cmark_node_get_url_end_column(NULL), 0,
+         "url end column of NULL");
+}
+
+// A link whose destination sits on a later line than its opening bracket: the
+// node must span both lines, and the destination position must land on the
+// second one.
+static void multiline_link_source_pos(test_batch_runner *runner) {
+  static const char markdown[] = "[a\nb](u)\n";
+
+  cmark_node *doc =
+      cmark_parse_document(markdown, sizeof(markdown) - 1, CMARK_OPT_DEFAULT);
+  cmark_node *link = first_node_of_type(doc, CMARK_NODE_LINK);
+  OK(runner, link != NULL, "multiline link found");
+  if (link != NULL) {
+    INT_EQ(runner, cmark_node_get_start_line(link), 1, "link start line");
+    INT_EQ(runner, cmark_node_get_start_column(link), 1, "link start column");
+    INT_EQ(runner, cmark_node_get_end_line(link), 2, "link end line");
+    INT_EQ(runner, cmark_node_get_end_column(link), 5, "link end column");
+    INT_EQ(runner, cmark_node_get_url_start_line(link), 2, "url start line");
+    INT_EQ(runner, cmark_node_get_url_start_column(link), 4, "url start column");
+    INT_EQ(runner, cmark_node_get_url_end_line(link), 2, "url end line");
+    INT_EQ(runner, cmark_node_get_url_end_column(link), 4, "url end column");
+  }
+  cmark_node_free(doc);
+}
+
 int main(void) {
   int retval;
   test_batch_runner *runner = test_batch_runner_new();
@@ -1185,6 +1313,8 @@ int main(void) {
   source_pos(runner);
   source_pos_inlines(runner);
   ref_source_pos(runner);
+  image_size_and_url_pos(runner);
+  multiline_link_source_pos(runner);
 
   test_print_summary(runner);
   retval = test_ok(runner) ? 0 : 1;

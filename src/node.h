@@ -73,6 +73,15 @@ typedef struct {
   unsigned char *title;
   int width;
   int height;
+  /* Source position of the raw destination as spelled in the input, for inline
+   * links and images with a non-empty destination only. Zero for
+   * reference-style links and for an empty destination such as `[a]()`.
+   * `url_end_column` is inclusive of the last byte, so that it matches the
+   * convention of cmark_node's own `end_column`. */
+  int url_start_line;
+  int url_start_column;
+  int url_end_line;
+  int url_end_column;
 } cmark_link;
 
 typedef struct {

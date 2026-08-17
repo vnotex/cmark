@@ -392,6 +392,35 @@ CMARK_EXPORT const char *cmark_node_get_title(cmark_node *node);
  */
 CMARK_EXPORT int cmark_node_set_title(cmark_node *node, const char *title);
 
+/** Returns the declared width/height of an image 'node' coming from the
+    `=WxH` size extension, or 0 when unspecified or when 'node' is not an
+    image.
+ */
+CMARK_EXPORT int cmark_node_get_image_width(cmark_node *node);
+CMARK_EXPORT int cmark_node_get_image_height(cmark_node *node);
+
+/** Source position of the *raw* destination of an inline link or image, as
+    spelled in the input (so angle brackets, backslash escapes, entities and
+    percent-encoding are all retained -- unlike cmark_node_get_url(), which
+    returns the cleaned value).
+
+    `..._end_column` is inclusive of the last byte, matching the convention of
+    cmark_node_get_end_column().
+
+    Like cmark_node_get_start_line() and friends, these are recorded during
+    parsing regardless of CMARK_OPT_SOURCEPOS; that option only controls
+    whether a renderer emits them.
+
+    All four return 0 when there is no inline destination -- reference-style
+    links and images, and an empty destination such as `[a]()`, which spans no
+    bytes and so has no inclusive end byte -- or when 'node' is not a link or
+    image.
+ */
+CMARK_EXPORT int cmark_node_get_url_start_line(cmark_node *node);
+CMARK_EXPORT int cmark_node_get_url_start_column(cmark_node *node);
+CMARK_EXPORT int cmark_node_get_url_end_line(cmark_node *node);
+CMARK_EXPORT int cmark_node_get_url_end_column(cmark_node *node);
+
 /** Returns the literal "on enter" text for a custom 'node', or
     an empty string if no on_enter is set.  Returns NULL if called
     on a non-custom node.
