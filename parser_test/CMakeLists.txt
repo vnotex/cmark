@@ -11,7 +11,8 @@ set(TEST_TARGETS
     link_tests
     frontmatter_tests
     footnote_tests
-    wikilink_tests)
+    wikilink_tests
+    sourcepos_tests)
 
 foreach(TARGET ${TEST_TARGETS})
     add_executable(${TARGET} ${TARGET}.c test_utils.c)

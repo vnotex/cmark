@@ -303,11 +303,15 @@ static int count_newlines(subject *subj, bufsize_t from, bufsize_t len, int *sin
 // Adjust `node`'s `end_line`, `end_column`, and `subj`'s `line` and
 // `column_offset` according to the number of newlines in a just-matched span
 // of text in `subj`.
-static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int matchlen, int extra, int options) {
-  if (!(options & CMARK_OPT_SOURCEPOS)) {
-    return;
-  }
-
+//
+// VNoteX: this is unconditional on purpose. It performs position bookkeeping
+// only (`subj->line`, `subj->column_offset`, `node->end_line`,
+// `node->end_column`); it emits nothing and takes no part in token
+// recognition. Gating it on CMARK_OPT_SOURCEPOS -- a *renderer* option --
+// contradicted the contract in cmark.h ("recorded during parsing regardless of
+// CMARK_OPT_SOURCEPOS") and left `subj->line` stale for every inline node
+// following a multiline code span or a multiline inline HTML tag.
+static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int matchlen, int extra) {
   int since_newline;
   int newlines = count_newlines(subj, subj->pos - matchlen - extra, matchlen, &since_newline);
   if (newlines) {
@@ -478,7 +482,7 @@ static void S_normalize_code(cmark_strbuf *s) {
 
 // Parse backtick code section or raw backticks, return an inline.
 // Assumes that the subject has a backtick at the current position.
-static cmark_node *handle_backticks(subject *subj, int options) {
+static cmark_node *handle_backticks(subject *subj) {
   bufsize_t initpos = subj->pos;
   cmark_chunk openticks = take_while(subj, isbacktick);
   bufsize_t startpos = subj->pos;
@@ -499,7 +503,7 @@ static cmark_node *handle_backticks(subject *subj, int options) {
                                     endpos - 1);
     node->len = buf.size;
     node->data = cmark_strbuf_detach(&buf);
-    adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len, options);
+    adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len);
     return node;
   }
 }
@@ -1081,7 +1085,7 @@ unsigned char *cmark_clean_title(cmark_mem *mem, cmark_chunk *title) {
 
 // Parse an autolink or HTML tag.
 // Assumes the subject has a '<' character at the current position.
-static cmark_node *handle_pointy_brace(subject *subj, int options) {
+static cmark_node *handle_pointy_brace(subject *subj) {
   bufsize_t matchlen = 0;
   cmark_chunk contents;
 
@@ -1175,7 +1179,7 @@ static cmark_node *handle_pointy_brace(subject *subj, int options) {
     memcpy(node->data, src, len);
     node->data[len] = 0;
     node->len = len;
-    adjust_subj_node_newlines(subj, node, matchlen, 1, options);
+    adjust_subj_node_newlines(subj, node, matchlen, 1);
     return node;
   }
 
@@ -1725,7 +1729,7 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     new_inl = handle_newline(subj);
     break;
   case '`':
-    new_inl = handle_backticks(subj, options);
+    new_inl = handle_backticks(subj);
     break;
   case '$':
     new_inl = handle_dollar(subj);
@@ -1737,7 +1741,7 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     new_inl = handle_entity(subj);
     break;
   case '<':
-    new_inl = handle_pointy_brace(subj, options);
+    new_inl = handle_pointy_brace(subj);
     break;
   case '*':
   case '_':
