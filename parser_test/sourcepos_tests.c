@@ -170,6 +170,48 @@ int test_absolute_span_after_multiline_inline_html() {
                           CMARK_NODE_CODE, 2, 20, 2, 25);
 }
 
+// A multiline construct's OWN end column must cover its closing delimiter.
+//
+// adjust_subj_node_newlines() derives it from a scan that stops BEFORE the
+// closing delimiter (the backtick run / the `>`), so the delimiter's width has
+// to be added back, along with block_offset -- the container prefix width that
+// every column this parser reports includes. Omitting them ended a code span
+// `1 + prefix width` characters early, which cut off the closing backtick.
+int test_multiline_code_span_own_span() {
+  // Line 2 is "de` b": the closing backtick is column 3.
+  return check_first_node("a `co\nde` b\n", CMARK_NODE_CODE, 1, 3, 2, 3);
+}
+
+int test_multiline_code_span_own_span_in_block_quote() {
+  // Line 2 is "> de` b": the closing backtick is column 5.
+  return check_first_node("> a `co\n> de` b\n", CMARK_NODE_CODE, 1, 5, 2, 5);
+}
+
+int test_multiline_code_span_own_span_in_list_item() {
+  // Line 2 is "  de` b": the closing backtick is column 5.
+  return check_first_node("- a `co\n  de` b\n", CMARK_NODE_CODE, 1, 5, 2, 5);
+}
+
+// A multi-character delimiter: the whole closing run is part of the span.
+int test_multiline_code_span_own_span_long_delimiter() {
+  // Line 2 is "  de`` b": the closing run ends at column 6.
+  return check_first_node("- a ``co\n  de`` b\n", CMARK_NODE_CODE, 1, 5, 2, 6);
+}
+
+// A lazy continuation line carries no container prefix, but the reported column
+// still includes block_offset -- the same convention subj_line_column_at()
+// applies, and what an ancestor paragraph reports for the same position. This
+// pins the convention rather than the source column (which is 3 here).
+int test_multiline_code_span_own_span_lazy_continuation() {
+  return check_first_node("- a `co\nde` b\n", CMARK_NODE_CODE, 1, 5, 2, 5);
+}
+
+int test_multiline_inline_html_own_span() {
+  // Line 2 is "class=\"x\">b</span> c": the tag's `>` is column 10.
+  return check_first_node("a <span\nclass=\"x\">b</span> c\n",
+                          CMARK_NODE_HTML_INLINE, 1, 3, 2, 10);
+}
+
 int main() {
   CASE(test_after_multiline_code_span);
   CASE(test_after_multiline_inline_html);
@@ -181,5 +223,11 @@ int main() {
   CASE(test_wrapped_link_destination);
   CASE(test_absolute_span_after_multiline_code_span);
   CASE(test_absolute_span_after_multiline_inline_html);
+  CASE(test_multiline_code_span_own_span);
+  CASE(test_multiline_code_span_own_span_in_block_quote);
+  CASE(test_multiline_code_span_own_span_in_list_item);
+  CASE(test_multiline_code_span_own_span_long_delimiter);
+  CASE(test_multiline_code_span_own_span_lazy_continuation);
+  CASE(test_multiline_inline_html_own_span);
   return 0;
 }

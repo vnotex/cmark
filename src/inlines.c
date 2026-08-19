@@ -304,6 +304,15 @@ static int count_newlines(subject *subj, bufsize_t from, bufsize_t len, int *sin
 // `column_offset` according to the number of newlines in a just-matched span
 // of text in `subj`.
 //
+// `matchlen` bytes starting at `subj->pos - matchlen - extra` are scanned for
+// newlines; `extra` is the width of the CLOSING delimiter, which sits after
+// that range (the closing backtick run of a code span, the `>` of an inline
+// HTML tag). `since_newline` is therefore the 0-based column, within the last
+// line's stripped content, of the first byte of that closing delimiter, and the
+// node's inclusive end column is `since_newline + extra` -- plus `block_offset`,
+// the width of the container prefix the block layer stripped, which every
+// column this parser reports includes (see `subj_line_column_at()`).
+//
 // VNoteX: this is unconditional on purpose. It performs position bookkeeping
 // only (`subj->line`, `subj->column_offset`, `node->end_line`,
 // `node->end_column`); it emits nothing and takes no part in token
@@ -317,7 +326,7 @@ static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int match
   if (newlines) {
     subj->line += newlines;
     node->end_line += newlines;
-    node->end_column = since_newline;
+    node->end_column = since_newline + extra + subj->block_offset;
     subj->column_offset = -subj->pos + since_newline + extra;
   }
 }
