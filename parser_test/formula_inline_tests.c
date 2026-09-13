@@ -66,20 +66,43 @@ int test_formula_inline_empty() {
 
 int test_formula_inline_simple_html() {
   return test_html("$E=mc^2$",
-      "<p><span class=\"math inline\">\\(E=mc^2\\)</span></p>\n",
+      "<p><eq class=\"tex-to-render\">$E=mc^2$</eq></p>\n",
       CMARK_OPT_DEFAULT);
 }
 
 int test_formula_inline_multiple_html() {
   return test_html("$a+b$ and $c+d$",
-      "<p><span class=\"math inline\">\\(a+b\\)</span> and "
-      "<span class=\"math inline\">\\(c+d\\)</span></p>\n",
+      "<p><eq class=\"tex-to-render\">$a+b$</eq> and "
+      "<eq class=\"tex-to-render\">$c+d$</eq></p>\n",
       CMARK_OPT_DEFAULT);
 }
 
 int test_formula_inline_special_chars_html() {
   return test_html("$a < b$",
-      "<p><span class=\"math inline\">\\(a < b\\)</span></p>\n",
+      "<p><eq class=\"tex-to-render\">$a &lt; b$</eq></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_inline_escaped_dollar_html() {
+  return test_html("$a\\$b$ and $a" "\\\\" "\\$" "b$",
+      "<p><eq class=\"tex-to-render\">$a\\$b$</eq> and "
+      "<eq class=\"tex-to-render\">$a" "\\\\" "\\$" "b$</eq></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_inline_html_metacharacters() {
+  return test_html("$a < b & c > d$ and $\\text{</eq><img>}$ and $&lt;$",
+      "<p><eq class=\"tex-to-render\">$a &lt; b &amp; c &gt; d$</eq> and "
+      "<eq class=\"tex-to-render\">$\\text{&lt;/eq&gt;&lt;img&gt;}$</eq> and "
+      "<eq class=\"tex-to-render\">$&amp;lt;$</eq></p>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_inline_literal_contexts_html() {
+  return test_html("\\$p_1\\$ and `$p_1$`\n\n$$p_1$$\n\n$formula",
+      "<p>$p_1$ and <code>$p_1$</code></p>\n"
+      "<p>$$p_1$$</p>\n"
+      "<p>$formula</p>\n",
       CMARK_OPT_DEFAULT);
 }
 
@@ -92,5 +115,8 @@ int main() {
   CASE(test_formula_inline_simple_html);
   CASE(test_formula_inline_multiple_html);
   CASE(test_formula_inline_special_chars_html);
+  CASE(test_formula_inline_escaped_dollar_html);
+  CASE(test_formula_inline_html_metacharacters);
+  CASE(test_formula_inline_literal_contexts_html);
   return 0;
 }

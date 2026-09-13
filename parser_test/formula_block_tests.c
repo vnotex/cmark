@@ -65,20 +65,40 @@ int test_formula_block_empty() {
 
 int test_formula_block_simple_html() {
   return test_html("$$\nE=mc^2\n$$",
-      "<div class=\"math display\">\\[E=mc^2\n\\]</div>\n",
+      "<section><eqn class=\"tex-to-render\">$$E=mc^2\n$$</eqn></section>\n",
       CMARK_OPT_DEFAULT);
 }
 
 int test_formula_block_raw_html() {
   return test_html("\\begin{equa}\nE=mc^2\n\\end{equa}",
-      "<div class=\"math display\">\\[E=mc^2\n\\]</div>\n",
+      "<section><eqn class=\"tex-to-render\">$$E=mc^2\n$$</eqn></section>\n",
       CMARK_OPT_DEFAULT);
 }
 
 int test_formula_block_sourcepos_html() {
   return test_html("$$\nE=mc^2\n$$",
-      "<div class=\"math display\" data-sourcepos=\"1:1-3:2\">\\[E=mc^2\n\\]</div>\n",
+      "<section><eqn class=\"tex-to-render\" data-sourcepos=\"1:1-3:2\">"
+      "$$E=mc^2\n$$</eqn></section>\n",
       CMARK_OPT_SOURCEPOS);
+}
+
+int test_formula_block_html_metacharacters() {
+  return test_html("$$\na < b & c > d\n$$",
+      "<section><eqn class=\"tex-to-render\">"
+      "$$a &lt; b &amp; c &gt; d\n$$</eqn></section>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_block_escaped_dollars_html() {
+  return test_html("$$\na\\$\\$b\n$$",
+      "<section><eqn class=\"tex-to-render\">$$a\\$\\$b\n$$</eqn></section>\n",
+      CMARK_OPT_DEFAULT);
+}
+
+int test_formula_block_empty_html() {
+  return test_html("$$\n$$",
+      "<section><eqn class=\"tex-to-render\">$$$$</eqn></section>\n",
+      CMARK_OPT_DEFAULT);
 }
 
 int main() {
@@ -91,5 +111,8 @@ int main() {
   CASE(test_formula_block_simple_html);
   CASE(test_formula_block_raw_html);
   CASE(test_formula_block_sourcepos_html);
+  CASE(test_formula_block_html_metacharacters);
+  CASE(test_formula_block_escaped_dollars_html);
+  CASE(test_formula_block_empty_html);
   return 0;
 }

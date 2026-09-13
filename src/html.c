@@ -20,6 +20,25 @@ static void escape_html(cmark_strbuf *dest, const unsigned char *source,
   houdini_escape_html(dest, source, length, 0);
 }
 
+static void escape_inline_formula(cmark_strbuf *dest,
+                                  const unsigned char *source,
+                                  bufsize_t length) {
+  bufsize_t i, start = 0;
+
+  if (length == 0)
+    return;
+
+  for (i = 0; i < length; ++i) {
+    if (source[i] == '$') {
+      escape_html(dest, source + start, i - start);
+      // Restore the backslash removed by handle_dollar().
+      cmark_strbuf_puts(dest, "\\$");
+      start = i + 1;
+    }
+  }
+  escape_html(dest, source + start, length - start);
+}
+
 static inline void cr(cmark_strbuf *html) {
   if (html->size && html->ptr[html->size - 1] != '\n')
     cmark_strbuf_putc(html, '\n');
@@ -497,18 +516,18 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
   }
 
   case CMARK_NODE_FORMULA_INLINE:
-    cmark_strbuf_puts(html, "<span class=\"math inline\">\\(");
-    cmark_strbuf_put(html, node->data, node->len);
-    cmark_strbuf_puts(html, "\\)</span>");
+    cmark_strbuf_puts(html, "<eq class=\"tex-to-render\">$");
+    escape_inline_formula(html, node->data, node->len);
+    cmark_strbuf_puts(html, "$</eq>");
     break;
 
   case CMARK_NODE_FORMULA_BLOCK:
     cr(html);
-    cmark_strbuf_puts(html, "<div class=\"math display\"");
+    cmark_strbuf_puts(html, "<section><eqn class=\"tex-to-render\"");
     S_render_sourcepos(node, html, options);
-    cmark_strbuf_puts(html, ">\\[");
-    cmark_strbuf_put(html, node->data, node->len);
-    cmark_strbuf_puts(html, "\\]</div>\n");
+    cmark_strbuf_puts(html, ">$$");
+    escape_html(html, node->data, node->len);
+    cmark_strbuf_puts(html, "$$</eqn></section>\n");
     break;
 
   default:
