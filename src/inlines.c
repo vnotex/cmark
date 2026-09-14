@@ -418,11 +418,10 @@ static bufsize_t scan_to_closing_backticks(subject *subj,
 }
 
 
-// Try to process a dollar inline formula span that began with a
-// dollar (already parsed). Return 0 if you don't find matching closing
-// dollar, otherwise return the position in the subject
-// after the closing dollar.
-static bufsize_t scan_to_closing_dollar(subject *subj) {
+// Find the first unescaped dollar after an inline formula opener. Never
+// search past a lone dollar or a rejected closer: each dollar-free segment
+// is scanned at most once, even when many formulas are malformed.
+static bufsize_t scan_to_closing_dollar(subject *subj, bufsize_t fence_length) {
   bufsize_t startpos = subj->pos;
 
   // read non dollar
@@ -441,9 +440,12 @@ static bufsize_t scan_to_closing_dollar(subject *subj) {
     }
     advance(subj);
   }
-  if (!is_eof(subj) && c == '$') {
-    advance(subj);
-    return (subj->pos);
+  if (!is_eof(subj) && c == '$' &&
+      (fence_length == 1 ||
+       (subj->pos + 1 < subj->input.len &&
+        peek_at(subj, subj->pos + 1) == '$'))) {
+    subj->pos += fence_length;
+    return subj->pos;
   } else {
     // Rewind it.
     subj->pos = startpos;
@@ -522,60 +524,52 @@ static cmark_node *handle_backticks(subject *subj) {
 // Assumes that the subject has a dollar at the current position.
 static cmark_node *handle_dollar(subject *subj) {
   bufsize_t initpos = subj->pos;
-  // Skip the open dollar.
-  advance(subj);
+  // Prefer a double-dollar opener before applying the single-dollar rule.
+  cmark_chunk opener =
+      initpos + 1 < subj->input.len && peek_at(subj, initpos + 1) == '$'
+          ? cmark_chunk_literal("$$")
+          : cmark_chunk_literal("$");
+  bufsize_t fence_length = opener.len;
+  subj->pos += fence_length;
   bufsize_t startpos = subj->pos;
 
   // Pre check.
-  if (subj->pos > 1) {
-    unsigned char before_char = peek_at(subj, subj->pos - 2);
-    if (before_char == '$' ||
+  if (initpos > 0) {
+    unsigned char before_char = peek_at(subj, initpos - 1);
+    if ((fence_length == 1 && before_char == '$') ||
         (before_char >= '0' && before_char <= '9') ||
         before_char == '\\') {
       // Not a legal open dollar.
-      return make_str(subj, initpos, initpos, cmark_chunk_literal("$"));
+      return make_str(subj, initpos, startpos - 1, opener);
     }
   }
 
-  bufsize_t endpos = scan_to_closing_dollar(subj);
-  if (endpos == 0) {
+  bufsize_t endpos = scan_to_closing_dollar(subj, fence_length);
+  if (endpos == 0 || endpos - startpos == fence_length) {
     subj->pos = startpos;
-    return make_str(subj, initpos, initpos, cmark_chunk_literal("$"));
+    return make_str(subj, initpos, startpos - 1, opener);
   }
 
-  // Post check.
-  {
-    // $$ is invalid.
-    if (endpos - startpos == 1) {
-      return make_str(subj, initpos, startpos, cmark_chunk_literal("$$"));
-    }
-
-    // No space before the closing dollar.
-    unsigned char before_char = peek_at(subj, endpos - 2);
-    if (endpos - startpos == 1 || before_char == ' ' || before_char == '\t') {
-      // Not a legal closing dollar.
-      subj->pos = startpos;
-      return make_str(subj, initpos, initpos, cmark_chunk_literal("$"));
-    }
-
-    // No digit after the closing dollar.
-    if (endpos < subj->input.len) {
-      unsigned char after_char = peek_at(subj, endpos);
-      if (after_char >= '0' && after_char <= '9') {
-        // Not a legal closing dollar.
-        subj->pos = startpos;
-        return make_str(subj, initpos, initpos, cmark_chunk_literal("$"));
-      }
-    }
+  // Double-dollar content may end in whitespace; single-dollar rules stay
+  // unchanged. Neither form accepts a digit immediately after its closer.
+  unsigned char before_char = peek_at(subj, endpos - fence_length - 1);
+  unsigned char after_char =
+      endpos < subj->input.len ? peek_at(subj, endpos) : 0;
+  if ((fence_length == 1 && (before_char == ' ' || before_char == '\t')) ||
+      (after_char >= '0' && after_char <= '9')) {
+    subj->pos = startpos;
+    return make_str(subj, initpos, startpos - 1, opener);
   }
 
   cmark_strbuf buf = CMARK_BUF_INIT(subj->mem);
 
   cmark_strbuf_set(&buf, subj->input.data + startpos,
-                   endpos - startpos - 1);
+                   endpos - startpos - fence_length);
   cmark_strbuf_unescape_char(&buf, '$');
 
-  cmark_node *node = make_literal(subj, CMARK_NODE_FORMULA_INLINE, startpos, endpos - 2);
+  cmark_node *node = make_literal(subj, CMARK_NODE_FORMULA_INLINE, startpos,
+                                   endpos - fence_length - 1);
+  node->as.formula.fence_length = (uint8_t)fence_length;
   node->len = buf.size;
   node->data = cmark_strbuf_detach(&buf);
   return node;

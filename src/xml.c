@@ -109,6 +109,11 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
       cmark_strbuf_puts(xml, buffer);
     }
 
+    if (node->type == CMARK_NODE_FORMULA_INLINE &&
+        cmark_node_get_formula_display(node)) {
+      cmark_strbuf_puts(xml, " display=\"true\"");
+    }
+
     literal = false;
 
     switch (node->type) {

@@ -515,11 +515,17 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
     break;
   }
 
-  case CMARK_NODE_FORMULA_INLINE:
+  case CMARK_NODE_FORMULA_INLINE: {
+    bool display = cmark_node_get_formula_display(node);
     cmark_strbuf_puts(html, "<eq class=\"tex-to-render\">$");
+    if (display)
+      cmark_strbuf_putc(html, '$');
     escape_inline_formula(html, node->data, node->len);
+    if (display)
+      cmark_strbuf_putc(html, '$');
     cmark_strbuf_puts(html, "$</eq>");
     break;
+  }
 
   case CMARK_NODE_FORMULA_BLOCK:
     cr(html);

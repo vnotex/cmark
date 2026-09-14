@@ -419,6 +419,13 @@ int cmark_node_set_literal(cmark_node *node, const char *content) {
   return 0;
 }
 
+int cmark_node_get_formula_display(cmark_node *node) {
+  return node != NULL &&
+         (node->type == CMARK_NODE_FORMULA_BLOCK ||
+          (node->type == CMARK_NODE_FORMULA_INLINE &&
+           node->as.formula.fence_length == 2));
+}
+
 int cmark_node_get_heading_level(cmark_node *node) {
   if (node == NULL) {
     return 0;

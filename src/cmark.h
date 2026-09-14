@@ -311,6 +311,13 @@ CMARK_EXPORT const char *cmark_node_get_literal(cmark_node *node);
  */
 CMARK_EXPORT int cmark_node_set_literal(cmark_node *node, const char *content);
 
+/** Returns 1 for a block formula or an inline formula delimited by `$$`,
+ * and 0 for a single-dollar formula, a non-formula node, or NULL.
+ * Inline formula source positions exclude both opening and closing delimiters,
+ * regardless of display mode.
+ */
+CMARK_EXPORT int cmark_node_get_formula_display(cmark_node *node);
+
 /** Returns the heading level of 'node', or 0 if 'node' is not a heading.
  */
 CMARK_EXPORT int cmark_node_get_heading_level(cmark_node *node);

@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <string.h>
+
 #include <cmark.h>
 #include "test_utils.h"
 
@@ -503,6 +506,84 @@ int test_table_in_list_item_html() {
     CMARK_OPT_DEFAULT);
 }
 
+int test_table_display_math_html() {
+  return test_html(
+    "| $$h$$ | $i$ |\n"
+    "| --- | --- |\n"
+    "| $$a$$ and $$ b $$ | `$$code$$` and \\$\\$text\\$\\$ |",
+    "<table>\n<thead>\n<tr>\n"
+    "<th> <eq class=\"tex-to-render\">$$h$$</eq></th>\n"
+    "<th> <eq class=\"tex-to-render\">$i$</eq></th>\n"
+    "</tr>\n</thead>\n<tbody>\n<tr>\n"
+    "<td> <eq class=\"tex-to-render\">$$a$$</eq> and "
+    "<eq class=\"tex-to-render\">$$ b $$</eq></td>\n"
+    "<td> <code>$$code$$</code> and $$text$$</td>\n"
+    "</tr>\n</tbody>\n</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_display_math_boundaries_html() {
+  return test_html(
+    "| $$left | right$$ |\n"
+    "| --- | --- |\n"
+    "| $$a\\|b$$ | $$c < d & e$$ |\n"
+    "| $$ | $$ |",
+    "<table>\n<thead>\n<tr>\n"
+    "<th> $$left</th>\n<th> right$$</th>\n"
+    "</tr>\n</thead>\n<tbody>\n<tr>\n"
+    "<td> <eq class=\"tex-to-render\">$$a\\|b$$</eq></td>\n"
+    "<td> <eq class=\"tex-to-render\">$$c &lt; d &amp; e$$</eq></td>\n"
+    "</tr>\n<tr>\n<td> $$</td>\n<td> $$</td>\n"
+    "</tr>\n</tbody>\n</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_display_math_cell_local_source_bounds() {
+  const char *markdown =
+      "| \xCE\xB1 $$\xCE\xB2\\$c$$ and $d$ | $$e$$ $$f$$ |\n"
+      "| --- | --- |\n"
+      "| tail | end |";
+  const char *cells[] = {" \xCE\xB1 $$\xCE\xB2\\$c$$ and $d$ ",
+                         " $$e$$ $$f$$ "};
+  cmark_node *doc =
+      cmark_parse_document(markdown, strlen(markdown), CMARK_OPT_DEFAULT);
+  cmark_node *table = cmark_node_first_child(doc);
+  int ret = cmark_node_get_type(table) == CMARK_NODE_TABLE;
+  cmark_node *row = cmark_node_first_child(table);
+  cmark_node *cell = cmark_node_first_child(row);
+  for (int i = 0; ret && i < 2; ++i, cell = cmark_node_next(cell)) {
+    cmark_node *local =
+        cmark_parse_document(cells[i], strlen(cells[i]), CMARK_OPT_DEFAULT);
+    cmark_node *a = cmark_node_first_child(cell);
+    cmark_node *b = cmark_node_first_child(cmark_node_first_child(local));
+    int offset = cmark_node_get_start_column(cell) - 1;
+    int formulas = 0;
+    for (; ret; a = cmark_node_next(a), b = cmark_node_next(b)) {
+      while (a && cmark_node_get_type(a) != CMARK_NODE_FORMULA_INLINE)
+        a = cmark_node_next(a);
+      while (b && cmark_node_get_type(b) != CMARK_NODE_FORMULA_INLINE)
+        b = cmark_node_next(b);
+      if (a == NULL || b == NULL)
+        break;
+      ++formulas;
+      ret = ret &&
+            cmark_node_get_formula_display(a) == (i == 1 || formulas == 1) &&
+            cmark_node_get_formula_display(a) == cmark_node_get_formula_display(b) &&
+            strcmp(cmark_node_get_literal(a), cmark_node_get_literal(b)) == 0 &&
+            cmark_node_get_start_line(a) == 1 &&
+            cmark_node_get_end_line(a) == 1 &&
+            cmark_node_get_start_column(a) == cmark_node_get_start_column(b) + offset &&
+            cmark_node_get_end_column(a) == cmark_node_get_end_column(b) + offset;
+    }
+    ret = ret && !a && !b && formulas == 2;
+    cmark_node_free(local);
+  }
+  if (!ret)
+    fprintf(stderr, "Table and cell-local formula parsing must agree on byte bounds\n");
+  cmark_node_free(doc);
+  return ret;
+}
+
 int main() {
   CASE(test_table_basic);
   CASE(test_table_alignments);
@@ -522,5 +603,8 @@ int main() {
   CASE(test_table_escaped_pipes_html);
   CASE(test_table_in_list_item);
   CASE(test_table_in_list_item_html);
+  CASE(test_table_display_math_html);
+  CASE(test_table_display_math_boundaries_html);
+  CASE(test_table_display_math_cell_local_source_bounds);
   return 0;
 }
