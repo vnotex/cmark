@@ -399,10 +399,11 @@ CMARK_EXPORT int cmark_node_set_title(cmark_node *node, const char *title);
 CMARK_EXPORT int cmark_node_get_image_width(cmark_node *node);
 CMARK_EXPORT int cmark_node_get_image_height(cmark_node *node);
 
-/** Source position of the *raw* destination of an inline link or image, as
-    spelled in the input (so angle brackets, backslash escapes, entities and
+/** Source position of the *raw* destination of an inline link, image or
+    autolink, as spelled in the input (so backslash escapes, entities and
     percent-encoding are all retained -- unlike cmark_node_get_url(), which
-    returns the cleaned value).
+    returns the cleaned value). Inline angle destinations include their angle
+    brackets; autolink spans exclude the surrounding `<` and `>`.
 
     `..._end_column` is inclusive of the last byte, matching the convention of
     cmark_node_get_end_column().
@@ -568,6 +569,20 @@ cmark_parser *cmark_parser_new_with_mem_into_root(
  */
 CMARK_EXPORT
 void cmark_parser_free(cmark_parser *parser);
+
+/** Observe each accepted, non-empty, single-line reference destination,
+    including unreferenced and duplicate definitions. `line_number` is 1-based;
+    `line_text` excludes the newline and has the block-container prefix stripped.
+    `url_start` and `url_end` are half-open byte offsets within that line and
+    retain raw escapes, entities and angle delimiters. The line pointer is
+    borrowed only for the synchronous callback. NULL disables observation.
+ */
+typedef void (*cmark_reference_destination_callback)(
+    void *user_data, int line_number, const char *line_text,
+    int line_length, int url_start, int url_end);
+CMARK_EXPORT void cmark_parser_set_reference_destination_callback(
+    cmark_parser *parser, cmark_reference_destination_callback callback,
+    void *user_data);
 
 /** Feeds a string of length 'len' to 'parser'.
  */

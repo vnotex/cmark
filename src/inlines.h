@@ -17,7 +17,8 @@ void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
                          cmark_footnote_map *footnote_map, int options);
 
 bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
-                                       cmark_reference_map *refmap);
+                                       cmark_reference_map *refmap,
+                                       bufsize_t *url_start, bufsize_t *url_end);
 
 #ifdef __cplusplus
 }
