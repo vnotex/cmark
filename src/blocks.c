@@ -1514,6 +1514,7 @@ static bool try_opening_new_table_blocks(cmark_parser *parser, cmark_node **cont
 static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                             cmark_chunk *input, bool all_matched) {
   bool indented;
+  bool extensions = (parser->options & CMARK_OPT_NO_EXTENSIONS) == 0;
   cmark_list *data = NULL;
   bool maybe_lazy = S_type(parser->current) == CMARK_NODE_PARAGRAPH;
   cmark_node_type cont_type = S_type(*container);
@@ -1582,8 +1583,9 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                        parser->first_nonspace + matched - parser->offset,
                        false);
 
-    } else if (!indented && (matched = scan_formula_block_start(
-                                 input, parser->first_nonspace))) {
+    } else if (extensions && !indented &&
+               (matched =
+                    scan_formula_block_start(input, parser->first_nonspace))) {
       *container = add_child(parser, *container, CMARK_NODE_FORMULA_BLOCK,
                              parser->first_nonspace + 1);
       (*container)->as.formula.fence_length = matched;
@@ -1593,12 +1595,12 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                        parser->first_nonspace + matched - parser->offset,
                        false);
 
-    } else if (!indented && ((matched = scan_html_block_start(
-                                  input, parser->first_nonspace)) ||
-                             (cont_type != CMARK_NODE_PARAGRAPH &&
-                              !maybe_lazy &&
-                              (matched = scan_html_block_start_7(
-                                   input, parser->first_nonspace))))) {
+    } else if (!indented &&
+               ((matched =
+                     scan_html_block_start(input, parser->first_nonspace)) ||
+                (cont_type != CMARK_NODE_PARAGRAPH && !maybe_lazy &&
+                 (matched = scan_html_block_start_7(
+                      input, parser->first_nonspace))))) {
       *container = add_child(parser, *container, CMARK_NODE_HTML_BLOCK,
                              parser->first_nonspace + 1);
       (*container)->as.html_block_type = matched;
@@ -1617,10 +1619,11 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
         (*container)->as.heading.setext = true;
         S_advance_offset(parser, input, input->len - 1 - parser->offset, false);
       }
-    } else if (parser->line_number == 1 &&
+    } else if (extensions && parser->line_number == 1 &&
                S_type(*container) == CMARK_NODE_DOCUMENT &&
                parser->first_nonspace == parser->offset &&
-               (matched = scan_frontmatter_start(input, parser->first_nonspace))) {
+               (matched =
+                    scan_frontmatter_start(input, parser->first_nonspace))) {
       *container = add_child(parser, *container, CMARK_NODE_FRONTMATTER,
                              parser->first_nonspace + 1);
       S_advance_offset(parser, input,
@@ -1702,7 +1705,7 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       (*container)->as.code.fence_length = 0;
       (*container)->as.code.fence_offset = 0;
       (*container)->as.code.info = NULL;
-    } else if (!indented &&
+    } else if (extensions && !indented &&
                peek_at(input, parser->first_nonspace) == '[' &&
                peek_at(input, parser->first_nonspace + 1) == '^') {
       bufsize_t fn_label_start = 0, fn_label_end = 0;
@@ -1731,7 +1734,8 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       } else {
         break;
       }
-    } else if (try_opening_new_table_blocks(parser, container, input, indented)) {
+    } else if (extensions && try_opening_new_table_blocks(parser, container,
+                                                          input, indented)) {
       break;
     } else {
       break;

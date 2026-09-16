@@ -118,12 +118,12 @@ pathological_cmark = {
 
 whitespace_re = re.compile('/s+/')
 
-def run_pathological(q, inp, prog, lib_dir):
-    cmark = CMark(prog=prog, library_dir=lib_dir)
+def run_pathological(q, inp, prog, lib_dir, no_extensions):
+    cmark = CMark(prog=prog, library_dir=lib_dir, no_extensions=no_extensions)
     q.put(cmark.to_html(inp))
 
-def run_pathological_cmark(q, inp, prog, lib_dir):
-    cmark = CMark(prog=prog, library_dir=lib_dir)
+def run_pathological_cmark(q, inp, prog, lib_dir, no_extensions):
+    cmark = CMark(prog=prog, library_dir=lib_dir, no_extensions=no_extensions)
     q.put(cmark.to_commonmark(inp))
 
 def run_tests(args):
@@ -142,13 +142,13 @@ def run_tests(args):
             (inp, regex) = pathological[description]
             p = multiprocessing.Process(
                 target=run_pathological,
-                args=(q, inp, args.program, args.library_dir)
+                args=(q, inp, args.program, args.library_dir, args.no_extensions)
             )
         else:
             (inp, regex) = pathological_cmark[description]
             p = multiprocessing.Process(
                 target=run_pathological_cmark,
-                args=(q, inp, args.program, args.library_dir)
+                args=(q, inp, args.program, args.library_dir, args.no_extensions)
             )
         p.start()
         try:
@@ -198,5 +198,7 @@ if __name__ == "__main__":
                     help='program to test')
     parser.add_argument('--library-dir', dest='library_dir', nargs='?',
                     default=None, help='directory containing dynamic library')
+    parser.add_argument('--no-extensions', action='store_true',
+                    help='parse without fork syntax extensions')
     args = parser.parse_args(sys.argv[1:])
     run_tests(args)

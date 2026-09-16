@@ -1315,7 +1315,7 @@ static bufsize_t manual_scan_link_url(cmark_chunk *input, bufsize_t offset,
 }
 
 // Return a link, an image, or a literal close bracket.
-static cmark_node *handle_close_bracket(subject *subj) {
+static cmark_node *handle_close_bracket(subject *subj, int options) {
   bufsize_t initial_pos, after_link_text_pos = 0;
   bufsize_t endurl, starttitle, endtitle, endall;
   bufsize_t starturl = 0;
@@ -1393,7 +1393,7 @@ static cmark_node *handle_close_bracket(subject *subj) {
                    ? starttitle
                    : starttitle + scan_link_title(&subj->input, starttitle);
 
-    if (is_image) {
+    if (is_image && (options & CMARK_OPT_NO_EXTENSIONS) == 0) {
       pair pstruct;
       pstruct.first = &width;
       pstruct.second = &height;
@@ -1540,15 +1540,14 @@ static cmark_node *handle_newline(subject *subj) {
 }
 
 static bufsize_t subject_find_special_char(subject *subj, int options) {
-  // "\r\n\\`&_*[]<!"
-  // Add '~', '=', '$'.
+  // Bit 1: CommonMark syntax; bit 2: fork-only syntax ($, =, ^, ~).
   static const int8_t SPECIAL_CHARS[256] = {
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 1,
       1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1571,9 +1570,10 @@ static bufsize_t subject_find_special_char(subject *subj, int options) {
   };
 
   bufsize_t n = subj->pos + 1;
+  int special_mask = (options & CMARK_OPT_NO_EXTENSIONS) ? 1 : 3;
 
   while (n < subj->input.len) {
-    if (SPECIAL_CHARS[subj->input.data[n]])
+    if (SPECIAL_CHARS[subj->input.data[n]] & special_mask)
       return n;
     if (options & CMARK_OPT_SMART && SMART_PUNCT_CHARS[subj->input.data[n]])
       return n;
@@ -1742,6 +1742,8 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     new_inl = handle_backticks(subj);
     break;
   case '$':
+    if (options & CMARK_OPT_NO_EXTENSIONS)
+      goto text;
     new_inl = handle_dollar(subj);
     break;
   case '\\':
@@ -1753,12 +1755,15 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
   case '<':
     new_inl = handle_pointy_brace(subj);
     break;
+  case '~':
+  case '=':
+    if (options & CMARK_OPT_NO_EXTENSIONS)
+      goto text;
+    // fall through
   case '*':
   case '_':
   case '\'':
   case '"':
-  case '~':
-  case '=':
     new_inl = handle_delim(subj, c, (options & CMARK_OPT_SMART) != 0);
     break;
   case '-':
@@ -1769,22 +1774,24 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     break;
   case '[':
     advance(subj);
-    // Check for wikilink [[...]]
-    new_inl = handle_wikilink(subj);
-    if (new_inl != NULL) {
-      break;
-    }
-    if (peek_char(subj) == '^' && subj->footnote_map != NULL) {
-      new_inl = handle_footnote_ref(subj);
+    if ((options & CMARK_OPT_NO_EXTENSIONS) == 0) {
+      // Check for wikilink [[...]]
+      new_inl = handle_wikilink(subj);
       if (new_inl != NULL) {
         break;
+      }
+      if (peek_char(subj) == '^' && subj->footnote_map != NULL) {
+        new_inl = handle_footnote_ref(subj);
+        if (new_inl != NULL) {
+          break;
+        }
       }
     }
     new_inl = make_str(subj, subj->pos - 1, subj->pos - 1, cmark_chunk_literal("["));
     push_bracket(subj, false, new_inl);
     break;
   case ']':
-    new_inl = handle_close_bracket(subj);
+    new_inl = handle_close_bracket(subj, options);
     break;
   case '!':
     advance(subj);
@@ -1797,6 +1804,8 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     }
     break;
   case '^':
+    if (options & CMARK_OPT_NO_EXTENSIONS)
+      goto text;
     advance(subj);
     if (peek_char(subj) == '[' && subj->footnote_map != NULL) {
       advance(subj); // skip '['
@@ -1808,6 +1817,7 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     }
     break;
   default:
+  text:
     endpos = subject_find_special_char(subj, options);
     contents = cmark_chunk_dup(&subj->input, subj->pos, endpos - subj->pos);
     startpos = subj->pos;

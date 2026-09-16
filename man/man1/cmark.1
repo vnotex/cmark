@@ -49,6 +49,13 @@ be rendered as curly quotes, depending on their position.
 \f[C]\-\-\-\f[] will be rendered as an em-dash.
 \f[C]...\f[] will be rendered as ellipses.
 .TP 12n
+.B \-\-no-extensions
+Disable this fork's syntax extensions when parsing: tables, inline and block
+math, frontmatter, wikilinks, footnotes (including inline footnotes),
+strikethrough, mark, and image dimensions. Parse their input as CommonMark
+instead. Extensions are enabled by default. This option does not change
+rendering or disable explicitly requested smart punctuation.
+.TP 12n
 .B \-\-safe
 Omit raw HTML and potentially dangerous URLs (default).
 Raw HTML is replaced by a placeholder comment

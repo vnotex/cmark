@@ -706,6 +706,14 @@ char *cmark_render_latex(cmark_node *root, int options, int width);
  */
 #define CMARK_OPT_SMART (1 << 10)
 
+/** Disable this fork's syntax extensions when parsing: tables, inline and
+ * block math, frontmatter, wikilinks, footnotes (including inline footnotes),
+ * strikethrough, mark, and image dimensions. Parse their input as CommonMark
+ * instead. Extensions remain enabled with CMARK_OPT_DEFAULT. This option
+ * does not change rendering or disable other explicitly selected options.
+ */
+#define CMARK_OPT_NO_EXTENSIONS (1 << 11)
+
 /**
  * ## Version information
  */

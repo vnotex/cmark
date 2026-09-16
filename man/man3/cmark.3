@@ -874,6 +874,22 @@ with the replacement character U+FFFD.
 Convert straight quotes to curly, \f[C]\-\-\-\f[] to em dashes,
 \f[C]\-\-\f[] to en dashes.
 
+.PP
+.nf
+\fC
+.RS 0n
+#define CMARK_OPT_NO_EXTENSIONS (1 << 11)
+.RE
+\f[]
+.fi
+
+.PP
+Disable this fork's syntax extensions when parsing: tables, inline and
+block math, frontmatter, wikilinks, footnotes (including inline footnotes),
+strikethrough, mark, and image dimensions. Parse their input as CommonMark
+instead. Extensions remain enabled with CMARK_OPT_DEFAULT. This option
+does not change rendering or disable other explicitly selected options.
+
 .SS
 Version information
 

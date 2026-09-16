@@ -16,6 +16,19 @@ CommonMark, or an XML representation of the AST.  It also provides a
 command-line program (`cmark`) for parsing and rendering CommonMark
 documents.
 
+This fork enables tables, inline and block math, frontmatter, wikilinks,
+footnotes (including inline footnotes), strikethrough, mark, and image
+dimensions by default. To parse without these syntax extensions, pass
+`CMARK_OPT_NO_EXTENSIONS` to the library's parsing functions, or run:
+
+    cmark --no-extensions input.md
+
+This parsing option treats extension syntax according to CommonMark instead.
+It does not change rendering options or disable explicitly requested smart
+punctuation. Add `--unsafe` (or `CMARK_OPT_UNSAFE`) when raw HTML output is
+required. The upstream conformance, roundtrip, and pathological tests use
+`--no-extensions`; fork feature tests continue to use the default mode.
+
 Advantages of this library:
 
 - **Portable.**  The library and program are written in standard
@@ -28,7 +41,7 @@ Advantages of this library:
   cmark is 10,000 times faster than the original `Markdown.pl`, and
   on par with the very fastest available Markdown processors.
 
-- **Accurate.** The library passes all CommonMark conformance tests.
+- **Accurate.** CommonMark conformance is tested with `CMARK_OPT_NO_EXTENSIONS`.
 
 - **Standardized.** The library can be expected to parse CommonMark
   the same way as any other conforming parser.  So, for example,

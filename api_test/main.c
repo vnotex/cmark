@@ -1172,6 +1172,69 @@ static cmark_node *first_node_of_type(cmark_node *doc, cmark_node_type type) {
   return found;
 }
 
+static void no_extensions(test_batch_runner *runner) {
+  static const struct {
+    const char *markdown;
+    cmark_node_type extension_type;
+    const char *commonmark_html;
+    const char *description;
+  } cases[] = {
+      {"---\nkey: value\n---\n", CMARK_NODE_FRONTMATTER,
+       "<hr />\n<h2>key: value</h2>\n", "frontmatter"},
+      {"| a | b |\n| --- | --- |\n| c | d |\n", CMARK_NODE_TABLE,
+       "<p>| a | b |\n| --- | --- |\n| c | d |</p>\n", "table"},
+      {"$$\nx+y\n$$\n", CMARK_NODE_FORMULA_BLOCK, "<p>$$\nx+y\n$$</p>\n",
+       "block math"},
+      {"$x$ and *em*\n", CMARK_NODE_FORMULA_INLINE,
+       "<p>$x$ and <em>em</em></p>\n", "inline math"},
+      {"text $$x$$\n", CMARK_NODE_FORMULA_INLINE, "<p>text $$x$$</p>\n",
+       "double-dollar inline math"},
+      {"[[*foo* bar]]\n\n[*foo* bar]: /url\n", CMARK_NODE_WIKILINK,
+       "<p>[<a href=\"/url\"><em>foo</em> bar</a>]</p>\n", "wikilink"},
+      {"note[^n]\n\n[^n]: /url\n", CMARK_NODE_FOOTNOTE_REFERENCE,
+       "<p>note<a href=\"/url\">^n</a></p>\n",
+       "footnote definition and reference"},
+      {"a^[note]\n", CMARK_NODE_INLINE_FOOTNOTE, "<p>a^[note]</p>\n",
+       "inline footnote"},
+      {"~~deleted~~\n", CMARK_NODE_STRIKETHROUGH, "<p>~~deleted~~</p>\n",
+       "strikethrough"},
+      {"==marked==\n", CMARK_NODE_MARK, "<p>==marked==</p>\n", "mark"},
+      {"![a](i.png =500x300)\n", CMARK_NODE_IMAGE,
+       "<p>![a](i.png =500x300)</p>\n", "image dimensions"},
+  };
+  size_t i;
+
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    cmark_node *doc = cmark_parse_document(
+        cases[i].markdown, strlen(cases[i].markdown), CMARK_OPT_DEFAULT);
+    OK(runner, first_node_of_type(doc, cases[i].extension_type) != NULL,
+       "%s enabled by default", cases[i].description);
+    cmark_node_free(doc);
+
+    doc = cmark_parse_document(cases[i].markdown, strlen(cases[i].markdown),
+                               CMARK_OPT_NO_EXTENSIONS);
+    char *html = cmark_render_html(doc, CMARK_OPT_DEFAULT);
+    STR_EQ(runner, html, cases[i].commonmark_html,
+           "%s parsed as CommonMark without extensions", cases[i].description);
+    free(html);
+    cmark_node_free(doc);
+  }
+
+  // The parsing mode remains active across feeds and composes with other
+  // options.
+  cmark_parser *parser =
+      cmark_parser_new(CMARK_OPT_NO_EXTENSIONS | CMARK_OPT_SMART);
+  cmark_parser_feed(parser, "==\"", 3);
+  cmark_parser_feed(parser, "hello\"==\n", 9);
+  cmark_node *doc = cmark_parser_finish(parser);
+  char *html = cmark_render_html(doc, CMARK_OPT_DEFAULT);
+  STR_EQ(runner, html, "<p>==\xe2\x80\x9chello\xe2\x80\x9d==</p>\n",
+         "no extensions composes with smart punctuation across feeds");
+  free(html);
+  cmark_node_free(doc);
+  cmark_parser_free(parser);
+}
+
 // The image size and raw-destination accessors: vnote's editor uses these to
 // scale in-place previews and to rewrite destinations in the raw text, so they
 // have to be reachable without rendering to XML.
@@ -1313,6 +1376,7 @@ int main(void) {
   source_pos(runner);
   source_pos_inlines(runner);
   ref_source_pos(runner);
+  no_extensions(runner);
   image_size_and_url_pos(runner);
   multiline_link_source_pos(runner);
 

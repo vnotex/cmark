@@ -1,5 +1,10 @@
 [0.31.2]
 
+  * Add CMARK_OPT_NO_EXTENSIONS and --no-extensions to parse without fork
+    syntax extensions while preserving the default extension behavior.
+    Run upstream CommonMark conformance, roundtrip, and pathological tests
+    in this mode through both the library and command-line interfaces.
+
   * Export `cmark_node_is_inline`, `cmark_node_is_block`,
     `cmark_node_is_leaf` [non-breaking API change].
 

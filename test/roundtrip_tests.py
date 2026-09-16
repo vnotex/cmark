@@ -18,12 +18,15 @@ parser.add_argument('--no-normalize', dest='normalize',
         help='do not normalize HTML')
 parser.add_argument('-n', '--number', type=int, default=None,
         help='only consider the test with the given number')
+parser.add_argument('--no-extensions', action='store_true',
+        help='parse without fork syntax extensions')
 args = parser.parse_args(sys.argv[1:])
 
 spec = sys.argv[1]
 
 def converter(md):
-  cmark = CMark(prog=args.program, library_dir=args.library_dir)
+  cmark = CMark(prog=args.program, library_dir=args.library_dir,
+                no_extensions=args.no_extensions)
   [ec, result, err] = cmark.to_commonmark(md)
   if ec == 0:
     [ec, html, err] = cmark.to_html(result)

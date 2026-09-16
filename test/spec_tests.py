@@ -32,6 +32,8 @@ parser.add_argument('-n', '--number', type=int, default=None,
         help='only consider the test with the given number')
 parser.add_argument('--fuzz-corpus',
         help='convert test cases to fuzz corpus')
+parser.add_argument('--no-extensions', action='store_true',
+        help='parse without fork syntax extensions')
 args = parser.parse_args(sys.argv[1:])
 
 def out(str):
@@ -150,7 +152,8 @@ if __name__ == "__main__":
         exit(0)
     else:
         skipped = len(all_tests) - len(tests)
-        converter = CMark(prog=args.program, library_dir=args.library_dir).to_html
+        converter = CMark(prog=args.program, library_dir=args.library_dir,
+                          no_extensions=args.no_extensions).to_html
         result_counts = {'pass': 0, 'fail': 0, 'error': 0, 'skip': skipped}
         for test in tests:
             do_test(converter, test, args.normalize, result_counts)

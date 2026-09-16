@@ -21,14 +21,17 @@ IF (Python3_Interpreter_FOUND)
              COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py"
                                                            --no-normalize
                                                            --spec "${CMAKE_CURRENT_SOURCE_DIR}/spec.txt"
+                                                           --no-extensions
                                                            --library-dir "$<TARGET_FILE_DIR:cmark>")
 
     add_test(NAME pathological_tests_library
              COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/pathological_tests.py"
+                                                           --no-extensions
                                                            --library-dir "$<TARGET_FILE_DIR:cmark>")
 
     add_test(NAME roundtriptest_library
              COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/roundtrip_tests.py"
+                                                           --no-extensions
                                                            --spec "${CMAKE_CURRENT_SOURCE_DIR}/spec.txt"
                                                            --library-dir "$<TARGET_FILE_DIR:cmark>")
 
@@ -40,6 +43,18 @@ IF (Python3_Interpreter_FOUND)
   add_test(NAME spectest_executable
            COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py"
                                                          --no-normalize
+                                                         --spec "${CMAKE_CURRENT_SOURCE_DIR}/spec.txt"
+                                                         --no-extensions
+                                                         --program "$<TARGET_FILE:cmark_exe>")
+
+  add_test(NAME pathological_tests_executable
+           COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/pathological_tests.py"
+                                                         --no-extensions
+                                                         --program "$<TARGET_FILE:cmark_exe>")
+
+  add_test(NAME roundtriptest_executable
+           COMMAND "$<TARGET_FILE:Python3::Interpreter>" "${CMAKE_CURRENT_SOURCE_DIR}/roundtrip_tests.py"
+                                                         --no-extensions
                                                          --spec "${CMAKE_CURRENT_SOURCE_DIR}/spec.txt"
                                                          --program "$<TARGET_FILE:cmark_exe>")
 
