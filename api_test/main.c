@@ -1025,7 +1025,7 @@ static void source_pos(test_batch_runner *runner) {
                       "  </heading>\n"
                       "  <paragraph sourcepos=\"3:1-4:42\">\n"
                       "    <text sourcepos=\"3:1-3:14\" xml:space=\"preserve\">Hello “ </text>\n"
-                      "    <link sourcepos=\"3:15-3:37\" destination=\"http://www.google.com\">\n"
+                      "    <link sourcepos=\"3:15-3:37\" destination=\"http://www.google.com\" urlpos=\"3:16-3:36\">\n"
                       "      <text sourcepos=\"3:16-3:36\" xml:space=\"preserve\">http://www.google.com</text>\n"
                       "    </link>\n"
                       "    <softbreak />\n"

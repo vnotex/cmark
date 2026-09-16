@@ -86,6 +86,8 @@ static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, 
                              cmark_chunk *chunk, cmark_reference_map *refmap,
                              cmark_footnote_map *footnote_map);
 static bufsize_t subject_find_special_char(subject *subj, int options);
+static void subj_line_column_at(subject *subj, bufsize_t from, bufsize_t off,
+                                int *p_line, int *p_column);
 
 // Create an inline with a literal string value.
 static inline cmark_node *make_literal(subject *subj, cmark_node_type t,
@@ -191,9 +193,14 @@ static inline cmark_node *make_autolink(subject *subj, int start_column,
   link->as.link.title = NULL;
   link->as.link.width = 0;
   link->as.link.height = 0;
-  link->start_line = link->end_line = subj->line;
-  link->start_column = start_column + 1;
-  link->end_column = end_column + 1;
+  subj_line_column_at(subj, start_column, start_column,
+                      &link->start_line, &link->start_column);
+  subj_line_column_at(subj, start_column, end_column,
+                      &link->end_line, &link->end_column);
+  subj_line_column_at(subj, start_column, start_column + 1,
+                      &link->as.link.url_start_line, &link->as.link.url_start_column);
+  subj_line_column_at(subj, start_column, end_column - 1,
+                      &link->as.link.url_end_line, &link->as.link.url_end_column);
   append_child(link, make_str_with_entities(subj, start_column + 1, end_column - 1, &url));
   return link;
 }
@@ -1828,7 +1835,9 @@ void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
     parent->as.heading.internal_offset : 0;
   subject subj;
   cmark_chunk content = {parent->data, parent->len};
-  subject_from_buf(mem, parent->start_line, parent->start_column - 1 + internal_offset, &subj, &content, refmap, footnote_map);
+  int content_line = parent->content_start_line ? parent->content_start_line : parent->start_line;
+  subject_from_buf(mem, content_line, parent->start_column - 1 + internal_offset,
+                   &subj, &content, refmap, footnote_map);
   cmark_chunk_rtrim(&subj.input);
 
   while (!is_eof(&subj) && parse_inline(&subj, parent, options))
@@ -1857,7 +1866,8 @@ static void spnl(subject *subj) {
 // Return 0 if no reference found, otherwise position of subject
 // after reference is parsed.
 bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
-                                       cmark_reference_map *refmap) {
+                                       cmark_reference_map *refmap,
+                                       bufsize_t *url_start, bufsize_t *url_end) {
   subject subj;
 
   cmark_chunk lab;
@@ -1866,7 +1876,15 @@ bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
 
   bufsize_t matchlen = 0;
   bufsize_t beforetitle;
+  bufsize_t starturl;
+  bufsize_t endurl;
 
+  if (url_start) {
+    *url_start = 0;
+  }
+  if (url_end) {
+    *url_end = 0;
+  }
   subject_from_buf(mem, -1, 0, &subj, input, NULL, NULL);
 
   // parse label:
@@ -1882,11 +1900,14 @@ bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
 
   // parse link url:
   spnl(&subj);
+  starturl = subj.pos;
   if ((matchlen = manual_scan_link_url(&subj.input, subj.pos, &url)) > -1) {
     subj.pos += matchlen;
   } else {
     return 0;
   }
+
+  endurl = subj.pos;
 
   // parse optional link_title
   beforetitle = subj.pos;
@@ -1915,5 +1936,11 @@ bufsize_t cmark_parse_reference_inline(cmark_mem *mem, cmark_chunk *input,
   }
   // insert reference into refmap
   cmark_reference_create(refmap, &lab, &url, &title);
+  if (url_start) {
+    *url_start = starturl;
+  }
+  if (url_end) {
+    *url_end = endurl;
+  }
   return subj.pos;
 }

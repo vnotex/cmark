@@ -141,6 +141,13 @@ void cmark_parser_free(cmark_parser *parser) {
   mem->free(parser);
 }
 
+void cmark_parser_set_reference_destination_callback(
+    cmark_parser *parser, cmark_reference_destination_callback callback,
+    void *user_data) {
+  parser->reference_destination_callback = callback;
+  parser->reference_destination_user_data = user_data;
+}
+
 static cmark_node *finalize(cmark_parser *parser, cmark_node *b);
 
 // Returns true if line has only space characters, else false.
@@ -192,6 +199,9 @@ static inline bool contains_inlines(cmark_node_type block_type) {
 static void add_line(cmark_chunk *ch, cmark_parser *parser) {
   int chars_to_tab;
   int i;
+  if (parser->content.size == 0) {
+    parser->content_start_line = parser->line_number;
+  }
   if (parser->partially_consumed_tab) {
     parser->offset += 1; // skip over tab
     // add space characters:
@@ -249,11 +259,37 @@ static bool S_ends_with_blank_line(cmark_node *node) {
 // returns true if content remains after link defs are resolved.
 static bool resolve_reference_link_definitions(cmark_parser *parser) {
   bufsize_t pos;
+  bufsize_t url_start;
+  bufsize_t url_end;
   cmark_strbuf *node_content = &parser->content;
   cmark_chunk chunk = {node_content->ptr, node_content->size};
   while (chunk.len && chunk.data[0] == '[' &&
          (pos = cmark_parse_reference_inline(parser->mem, &chunk,
-                                             parser->refmap))) {
+                                             parser->refmap, &url_start, &url_end))) {
+    bufsize_t line_start = 0;
+    bool has_url = url_end > url_start &&
+                   !(url_end - url_start == 2 && chunk.data[url_start] == '<' &&
+                     chunk.data[url_end - 1] == '>');
+    // Walk the accepted bytes once, before dropping them. The content buffer
+    // contains normalized newlines, including the final source line's newline.
+    while (line_start < pos) {
+      bufsize_t line_end = line_start;
+      while (line_end < pos && chunk.data[line_end] != '\n') {
+        ++line_end;
+      }
+      if (parser->reference_destination_callback && has_url &&
+          url_start >= line_start && url_end <= line_end) {
+        parser->reference_destination_callback(
+            parser->reference_destination_user_data, parser->content_start_line,
+            (const char *)chunk.data + line_start, line_end - line_start,
+            url_start - line_start, url_end - line_start);
+      }
+      if (line_end == pos) {
+        break;
+      }
+      ++parser->content_start_line;
+      line_start = line_end + 1;
+    }
 
     chunk.data += pos;
     chunk.len -= pos;
@@ -304,6 +340,7 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
       // remove blank node (former reference def)
       cmark_node_free(b);
     } else {
+      b->content_start_line = parser->content_start_line;
       b->len = node_content->size;
       b->data = cmark_strbuf_detach(node_content);
     }
@@ -354,6 +391,7 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
 
   case CMARK_NODE_HEADING:
   case CMARK_NODE_HTML_BLOCK:
+    b->content_start_line = parser->content_start_line;
     b->len = node_content->size;
     b->data = cmark_strbuf_detach(node_content);
     break;

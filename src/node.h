@@ -74,8 +74,9 @@ typedef struct {
   int width;
   int height;
   /* Source position of the raw destination as spelled in the input, for inline
-   * links and images with a non-empty destination only. Zero for
-   * reference-style links and for an empty destination such as `[a]()`.
+   * links, images and autolinks with a non-empty destination only. Autolink
+   * spans exclude their angle brackets. Zero for reference-style links and
+   * for an empty destination such as `[a]()`.
    * `url_end_column` is inclusive of the last byte, so that it matches the
    * convention of cmark_node's own `end_column`. */
   int url_start_line;
@@ -120,6 +121,9 @@ struct cmark_node {
   unsigned char *data;
   bufsize_t len;
 
+  // First retained content line after reference definitions are removed.
+  // Keep start_line/start_column as the original block-prefix coordinate anchor.
+  int content_start_line;
   int start_line;
   int start_column;
   int end_line;

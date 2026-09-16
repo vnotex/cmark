@@ -32,6 +32,9 @@ struct cmark_parser {
   bufsize_t last_line_length;
   cmark_strbuf linebuf;
   cmark_strbuf content;
+  int content_start_line;
+  cmark_reference_destination_callback reference_destination_callback;
+  void *reference_destination_user_data;
   int options;
   bool last_buffer_ended_with_cr;
   unsigned int total_size;
