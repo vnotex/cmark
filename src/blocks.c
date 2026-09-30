@@ -199,6 +199,9 @@ static inline bool contains_inlines(cmark_node_type block_type) {
 static void add_line(cmark_chunk *ch, cmark_parser *parser) {
   int chars_to_tab;
   int i;
+  parser->content_last_line_offset = parser->content.size;
+  parser->content_last_line_column = parser->first_nonspace + 1;
+  parser->content_previous_line_length = parser->last_line_length;
   if (parser->content.size == 0) {
     parser->content_start_line = parser->line_number;
   }
@@ -298,12 +301,22 @@ static bool resolve_reference_link_definitions(cmark_parser *parser) {
   return !is_blank(node_content, 0);
 }
 
+static void finalize_paragraph(cmark_parser *parser, cmark_node *paragraph) {
+  if (!resolve_reference_link_definitions(parser)) {
+    // Remove blank nodes consisting only of reference definitions.
+    cmark_node_free(paragraph);
+  } else {
+    paragraph->content_start_line = parser->content_start_line;
+    paragraph->len = parser->content.size;
+    paragraph->data = cmark_strbuf_detach(&parser->content);
+  }
+}
+
 static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
   bufsize_t pos;
   cmark_node *item;
   cmark_node *subitem;
   cmark_node *parent;
-  bool has_content;
 
   parent = b->parent;
   assert(b->flags &
@@ -334,18 +347,8 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
 
   switch (S_type(b)) {
   case CMARK_NODE_PARAGRAPH:
-  {
-    has_content = resolve_reference_link_definitions(parser);
-    if (!has_content) {
-      // remove blank node (former reference def)
-      cmark_node_free(b);
-    } else {
-      b->content_start_line = parser->content_start_line;
-      b->len = node_content->size;
-      b->data = cmark_strbuf_detach(node_content);
-    }
+    finalize_paragraph(parser, b);
     break;
-  }
 
   case CMARK_NODE_CODE_BLOCK:
     if (!b->as.code.fenced) { // indented code
@@ -1375,7 +1378,7 @@ static cmark_node *try_opening_new_table_row(cmark_parser *parser, cmark_node *c
     return NULL;
   }
 
-  cmark_node *row = add_child(parser, container, CMARK_NODE_TABLE_ROW, container->start_column);
+  cmark_node *row = add_child(parser, container, CMARK_NODE_TABLE_ROW, parser->first_nonspace + 1);
   row->end_column = container->end_column;
   row->as.table_row.type = CMARK_TABLE_ROW_TYPE_DATA;
   if (!parse_table_row_cells(parser, row, data, len)) {
@@ -1432,8 +1435,17 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
     return NULL;
   }
 
-  // Try parsing parent node content as the header row.
-  int header_matched = scan_table_header(parser->content.ptr, parser->content.size);
+  // Only the final paragraph line can be the header. Earlier lines remain
+  // a paragraph in the same container, without requiring a blank separator.
+  const bufsize_t line_offset = parser->content_last_line_offset;
+  bufsize_t header_offset = line_offset;
+  while (header_offset < parser->content.size &&
+         S_is_space_or_tab(parser->content.ptr[header_offset])) {
+    ++header_offset;
+  }
+  const unsigned char *header = parser->content.ptr + header_offset;
+  const bufsize_t header_len = parser->content.size - header_offset;
+  int header_matched = scan_table_header(header, header_len);
   if (header_matched == 0) {
     return NULL;
   }
@@ -1443,26 +1455,49 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
     return NULL;
   }
 
+  const int paragraph_start_line = container->start_line;
+  const int paragraph_start_column = container->start_column;
   container->type = CMARK_NODE_TABLE;
+  container->start_line = parser->line_number - 1;
+  container->start_column = parser->content_last_line_column;
 
   cmark_node *header_row = add_child(parser, container, CMARK_NODE_TABLE_ROW, container->start_column);
   header_row->start_line = header_row->end_line = container->start_line;
   // Minus the extra '\n'.
-  header_row->end_column = container->start_column + parser->content.size - 2;
+  header_row->end_column = container->start_column + header_len - 2;
   header_row->as.table_row.type = CMARK_TABLE_ROW_TYPE_HEADER;
-  if (!parse_table_row_cells(parser, header_row, parser->content.ptr, parser->content.size)) {
+  if (!parse_table_row_cells(parser, header_row, header, header_len)) {
     container->type = CMARK_NODE_PARAGRAPH;
+    container->start_line = paragraph_start_line;
+    container->start_column = paragraph_start_column;
     cmark_node_free(header_row);
     return NULL;
   }
 
-  cmark_node *delimiter_row = add_child(parser, container, CMARK_NODE_TABLE_ROW, container->start_column);
+  cmark_node *delimiter_row = add_child(parser, container, CMARK_NODE_TABLE_ROW, parser->first_nonspace + 1);
   delimiter_row->as.table_row.type = CMARK_TABLE_ROW_TYPE_DELIMITER;
   if (!parse_table_row_cells(parser, delimiter_row, data, len)) {
     container->type = CMARK_NODE_PARAGRAPH;
+    container->start_line = paragraph_start_line;
+    container->start_column = paragraph_start_column;
     cmark_node_free(header_row);
     cmark_node_free(delimiter_row);
     return NULL;
+  }
+
+  if (line_offset > 0) {
+    // Cells own their literal copies now. Detach only the preceding text,
+    // keeping the original open node alive for current/last-matched pointers.
+    cmark_strbuf_truncate(&parser->content, line_offset);
+    cmark_node *paragraph = make_block(parser->mem, CMARK_NODE_PARAGRAPH,
+                                       paragraph_start_line, paragraph_start_column);
+    paragraph->flags &= ~CMARK_NODE__OPEN;
+    paragraph->end_line = container->start_line - 1;
+    paragraph->end_column = parser->content_previous_line_length;
+    int inserted = cmark_node_insert_before(container, paragraph);
+    assert(inserted);
+    (void)inserted;
+    finalize_paragraph(parser, paragraph);
   }
 
   // Init table data.

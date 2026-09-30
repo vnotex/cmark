@@ -33,6 +33,10 @@ struct cmark_parser {
   cmark_strbuf linebuf;
   cmark_strbuf content;
   int content_start_line;
+  // Final appended line and the preceding source line's end, for table interruption.
+  bufsize_t content_last_line_offset;
+  bufsize_t content_last_line_column;
+  bufsize_t content_previous_line_length;
   cmark_reference_destination_callback reference_destination_callback;
   void *reference_destination_user_data;
   int options;

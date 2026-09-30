@@ -584,7 +584,135 @@ int test_table_display_math_cell_local_source_bounds() {
   return ret;
 }
 
+// A table interrupts the last line of a paragraph, not the whole paragraph.
+int test_table_interrupts_list_paragraph_html() {
+  return test_html(
+    "- before\n"
+    "- item\n"
+    "  continuation\n"
+    "  | A | B |\n"
+    "  | --- | --- |\n"
+    "  | 1 | 2 |\n"
+    "- after\n",
+    "<ul>\n<li>before</li>\n<li>item\ncontinuation\n"
+    "<table>\n<thead>\n<tr>\n<th> A</th>\n<th> B</th>\n</tr>\n</thead>\n"
+    "<tbody>\n<tr>\n<td> 1</td>\n<td> 2</td>\n</tr>\n</tbody>\n</table>\n"
+    "</li>\n<li>after</li>\n</ul>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_interrupt_source_positions() {
+  // Vary the quote prefix width: columns must come from each source line,
+  // not the first paragraph line or the table header's indentation.
+  const char *markdown =
+      "> 1. intro\r\n"
+      ">    \xCE\xB1 continuation\r\n"
+      ">      | A | B |\r\n"
+      ">    | --- | --- |\r\n"
+      ">     | 1 | 2 |\r\n"
+      "> 2. after";
+  cmark_parser *parser = cmark_parser_new(CMARK_OPT_DEFAULT);
+  // Exercise CRLF and UTF-8 split across feed boundaries.
+  const size_t length = strlen(markdown);
+  for (size_t i = 0; i < length; ++i)
+    cmark_parser_feed(parser, markdown + i, 1);
+  cmark_node *doc = cmark_parser_finish(parser);
+  cmark_parser_free(parser);
+  cmark_node *quote = cmark_node_first_child(doc);
+  cmark_node *list = cmark_node_first_child(quote);
+  cmark_node *item = cmark_node_first_child(list);
+  cmark_node *paragraph = cmark_node_first_child(item);
+  cmark_node *table = cmark_node_next(paragraph);
+  int ret = cmark_node_get_type(quote) == CMARK_NODE_BLOCK_QUOTE &&
+            cmark_node_get_type(list) == CMARK_NODE_LIST &&
+            cmark_node_get_list_type(list) == CMARK_ORDERED_LIST &&
+            cmark_node_get_list_tight(list) &&
+            cmark_node_get_type(cmark_node_next(item)) == CMARK_NODE_ITEM &&
+            cmark_node_get_type(paragraph) == CMARK_NODE_PARAGRAPH &&
+            cmark_node_get_start_line(paragraph) == 1 &&
+            cmark_node_get_start_column(paragraph) == 6 &&
+            cmark_node_get_end_line(paragraph) == 2 &&
+            cmark_node_get_end_column(paragraph) == 20 &&
+            cmark_node_get_type(table) == CMARK_NODE_TABLE &&
+            cmark_node_get_start_line(table) == 3 &&
+            cmark_node_get_start_column(table) == 8 &&
+            cmark_node_get_end_line(table) == 5 &&
+            cmark_node_get_end_column(table) == 15;
+  const int columns[] = {8, 6, 7};
+  cmark_node *row = cmark_node_first_child(table);
+  for (int i = 0; ret && i < 3; ++i, row = cmark_node_next(row)) {
+    cmark_node *cell = cmark_node_first_child(row);
+    ret = cmark_node_get_type(row) == CMARK_NODE_TABLE_ROW &&
+          cmark_node_get_start_line(row) == i + 3 &&
+          cmark_node_get_end_line(row) == i + 3 &&
+          cmark_node_get_start_column(row) == columns[i] &&
+          cmark_node_get_start_line(cell) == i + 3 &&
+          cmark_node_get_start_column(cell) == columns[i] + 1;
+  }
+  ret = ret && row == NULL && cmark_node_next(table) == NULL;
+  if (!ret)
+    fprintf(stderr, "Interrupted table must preserve nesting and exact source bounds\n");
+  cmark_node_free(doc);
+  return ret;
+}
+
+int test_table_interrupt_keeps_preceding_lines() {
+  // The first line looks like a one-column header, but only the final line
+  // may be paired with the two-column delimiter.
+  return test_html(
+    "| preceding |\ntext\n| A | B |\n| --- | --- |\n",
+    "<p>| preceding |\ntext</p>\n"
+    "<table>\n<thead>\n<tr>\n<th> A</th>\n<th> B</th>\n</tr>\n</thead>\n</table>\n",
+    CMARK_OPT_DEFAULT);
+}
+
+int test_table_interrupt_rejections() {
+  const char *inputs[] = {
+      // A valid first line must not mask an invalid final header.
+      "| first |\nnot a header\n| --- |\n",
+      "text\n| A | B |\n| --- |\n",
+      "text\n| A |\n| invalid |\n",
+      "text\n| A |\n\n| --- |\n",
+      "```\ntext\n| A |\n| --- |\n```\n",
+      "- item\n\n      | A |\n      | --- |\n",
+  };
+  int ret = 1;
+  for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); ++i) {
+    cmark_node *doc = cmark_parse_document(inputs[i], strlen(inputs[i]), CMARK_OPT_DEFAULT);
+    cmark_iter *iter = cmark_iter_new(doc);
+    while (cmark_iter_next(iter) != CMARK_EVENT_DONE) {
+      if (cmark_node_get_type(cmark_iter_get_node(iter)) == CMARK_NODE_TABLE) {
+        fprintf(stderr, "Unexpected table for rejection case %zu\n", i);
+        ret = 0;
+      }
+    }
+    cmark_iter_free(iter);
+    cmark_node_free(doc);
+  }
+  ret = test_html("text\n| A |\n| --- |\n",
+                  "<p>text\n| A |\n| --- |</p>\n", CMARK_OPT_NO_EXTENSIONS) && ret;
+  return ret;
+}
+
+int test_table_interrupt_preserves_reference_definitions() {
+  int ret = test_html(
+    "[ref]: /target\ntext\n| A |\n| --- |\n| [link][ref] |\n",
+    "<p>text</p>\n<table>\n<thead>\n<tr>\n<th> A</th>\n</tr>\n</thead>\n"
+    "<tbody>\n<tr>\n<td> <a href=\"/target\">link</a></td>\n</tr>\n</tbody>\n</table>\n",
+    CMARK_OPT_DEFAULT);
+  // An all-definition prefix is removed entirely, without orphaning the table.
+  return test_html(
+    "[ref]: /target\n| [link][ref] |\n| --- |\n",
+    "<table>\n<thead>\n<tr>\n<th> <a href=\"/target\">link</a></th>\n"
+    "</tr>\n</thead>\n</table>\n", CMARK_OPT_DEFAULT) && ret;
+}
+
 int main() {
+  CASE(test_table_interrupts_list_paragraph_html);
+  CASE(test_table_interrupt_source_positions);
+  CASE(test_table_interrupt_keeps_preceding_lines);
+  CASE(test_table_interrupt_rejections);
+  CASE(test_table_interrupt_preserves_reference_definitions);
   CASE(test_table_basic);
   CASE(test_table_alignments);
   CASE(test_table_empty_cells);
