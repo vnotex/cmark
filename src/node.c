@@ -28,6 +28,8 @@ bool cmark_node_is_leaf(cmark_node *node) {
   }
   switch (node->type) {
     case CMARK_NODE_THEMATIC_BREAK: return true;
+    case CMARK_NODE_TOC:
+      return true;
     case CMARK_NODE_CODE_BLOCK : return true;
     case CMARK_NODE_FORMULA_BLOCK : return true;
     case CMARK_NODE_FRONTMATTER : return true;
@@ -66,6 +68,7 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   switch (node->type) {
   case CMARK_NODE_DOCUMENT:
   case CMARK_NODE_BLOCK_QUOTE:
+  case CMARK_NODE_ALERT:
   case CMARK_NODE_ITEM:
   case CMARK_NODE_FOOTNOTE_DEFINITION:
     return cmark_node_is_block(child) && child->type != CMARK_NODE_ITEM;
@@ -82,6 +85,8 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   case CMARK_NODE_STRONG:
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:
+  case CMARK_NODE_SUBSCRIPT:
+  case CMARK_NODE_SUPERSCRIPT:
   case CMARK_NODE_LINK:
   case CMARK_NODE_IMAGE:
   case CMARK_NODE_CUSTOM_INLINE:
@@ -107,6 +112,9 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
       case CMARK_NODE_STRIKETHROUGH:
       case CMARK_NODE_HTML_INLINE:
       case CMARK_NODE_MARK:
+      case CMARK_NODE_SUBSCRIPT:
+      case CMARK_NODE_SUPERSCRIPT:
+      case CMARK_NODE_FORMULA_INLINE:
       case CMARK_NODE_FOOTNOTE_REFERENCE:
       case CMARK_NODE_INLINE_FOOTNOTE:
         return true;
@@ -161,12 +169,18 @@ static void S_free_nodes(cmark_node *e) {
       mem->free(e->data);
       mem->free(e->as.code.info);
       break;
+    case CMARK_NODE_FORMULA_INLINE:
+    case CMARK_NODE_FORMULA_BLOCK:
+      mem->free(e->as.formula.label);
+      mem->free(e->as.formula.environment);
+      mem->free(e->data);
+      break;
     case CMARK_NODE_TEXT:
     case CMARK_NODE_HTML_INLINE:
     case CMARK_NODE_CODE:
     case CMARK_NODE_HTML_BLOCK:
-    case CMARK_NODE_FORMULA_INLINE:
-    case CMARK_NODE_FORMULA_BLOCK:
+    case CMARK_NODE_ALERT:
+    case CMARK_NODE_TOC:
     case CMARK_NODE_FRONTMATTER:
     case CMARK_NODE_TABLE_CELL:
     case CMARK_NODE_FOOTNOTE_DEFINITION:
@@ -179,6 +193,8 @@ static void S_free_nodes(cmark_node *e) {
     case CMARK_NODE_WIKILINK:
       mem->free(e->as.link.url);
       mem->free(e->as.link.title);
+      mem->free(e->as.link.width_text);
+      mem->free(e->as.link.height_text);
       break;
     case CMARK_NODE_TABLE:
       mem->free(e->as.table.alignments);
@@ -229,6 +245,14 @@ const char *cmark_node_get_type_string(cmark_node *node) {
     return "document";
   case CMARK_NODE_BLOCK_QUOTE:
     return "block_quote";
+  case CMARK_NODE_ALERT:
+    return "alert";
+  case CMARK_NODE_TOC:
+    return "toc";
+  case CMARK_NODE_SUBSCRIPT:
+    return "subscript";
+  case CMARK_NODE_SUPERSCRIPT:
+    return "superscript";
   case CMARK_NODE_LIST:
     return "list";
   case CMARK_NODE_ITEM:
@@ -417,6 +441,45 @@ int cmark_node_set_literal(cmark_node *node, const char *content) {
   }
 
   return 0;
+}
+
+int cmark_node_get_task_checked(cmark_node *node) {
+  return node && node->type == CMARK_NODE_ITEM && node->as.list.task
+             ? node->as.list.task - 1
+             : -1;
+}
+
+const char *cmark_node_get_alert_type(cmark_node *node) {
+  return node && node->type == CMARK_NODE_ALERT && node->data
+             ? (const char *)node->data
+             : "";
+}
+
+const char *cmark_node_get_toc_options(cmark_node *node) {
+  return node && node->type == CMARK_NODE_TOC && node->data
+             ? (const char *)node->data
+             : "";
+}
+
+const char *cmark_node_get_formula_label(cmark_node *node) {
+  return node &&
+                 (node->type == CMARK_NODE_FORMULA_BLOCK ||
+                  node->type == CMARK_NODE_FORMULA_INLINE) &&
+                 node->as.formula.label
+             ? (const char *)node->as.formula.label
+             : "";
+}
+
+const char *cmark_node_get_image_width_text(cmark_node *node) {
+  return node && node->type == CMARK_NODE_IMAGE && node->as.link.width_text
+             ? (const char *)node->as.link.width_text
+             : "";
+}
+
+const char *cmark_node_get_image_height_text(cmark_node *node) {
+  return node && node->type == CMARK_NODE_IMAGE && node->as.link.height_text
+             ? (const char *)node->as.link.height_text
+             : "";
 }
 
 int cmark_node_get_formula_display(cmark_node *node) {
@@ -761,6 +824,12 @@ int cmark_node_set_on_exit(cmark_node *node, const char *on_exit) {
   }
 
   return 0;
+}
+
+int cmark_node_get_content_start_line(cmark_node *node) {
+  return node ? (node->content_start_line ? node->content_start_line
+                                          : node->start_line)
+              : 0;
 }
 
 int cmark_node_get_start_line(cmark_node *node) {

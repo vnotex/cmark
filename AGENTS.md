@@ -81,9 +81,29 @@ Library target is `cmark` (builds `libcmark`). Executable target is `cmark_exe`.
 
 This fork adds node types not in upstream `commonmark/cmark`:
 `CMARK_NODE_STRIKETHROUGH`, `CMARK_NODE_MARK`, `CMARK_NODE_FORMULA_INLINE`,
-`CMARK_NODE_FORMULA_BLOCK`, `CMARK_NODE_FRONTMATTER`, `CMARK_NODE_TABLE`, `CMARK_NODE_TABLE_ROW`, `CMARK_NODE_TABLE_CELL`.
+`CMARK_NODE_FORMULA_BLOCK`, `CMARK_NODE_FRONTMATTER`, `CMARK_NODE_TABLE`,
+`CMARK_NODE_TABLE_ROW`, `CMARK_NODE_TABLE_CELL`, `CMARK_NODE_WIKILINK`, footnote
+nodes, and opt-in `CMARK_NODE_ALERT`, `CMARK_NODE_TOC`, `CMARK_NODE_SUBSCRIPT`
+and `CMARK_NODE_SUPERSCRIPT`.
 
-When adding new node types, update: `cmark_node_type` enum in `cmark.h`, short-name macros at bottom of `cmark.h`, `CMARK_NODE_LAST_BLOCK`/`CMARK_NODE_LAST_INLINE` sentinel values, all renderers, and `parser_test/` if applicable.
+`CMARK_OPT_VIEWER` preserves native extensions and opts into the viewer grammar;
+linkify and HTML-as-text are separate options. Never enable these additions under
+`CMARK_OPT_DEFAULT` or disable wikilinks to imitate markdown-it. `NO_EXTENSIONS`
+suppresses all syntax extensions. Single-line display math stays FORMULA_INLINE;
+source placement and HTML presentation are independent. Viewer formula bodies are
+lossless, including escaped dollars and optional labels. Viewer footnote continuations
+consume four indentation columns regardless of label width or optional definition indentation;
+eight columns retain a nested indented code block. Generic marker-relative behavior is unchanged.
+
+`cmark_render_html_with_options()` must not mutate the AST or retain caller data.
+Its heading ID table is source-ordered; the application assigns IDs in final render
+order, including relocated footnotes. Generic HTML defaults remain unchanged.
+Viewer URL allowances never imply `CMARK_OPT_UNSAFE`; apply the same policy to
+ordinary links and wikilinks. DOM sanitization remains the application's job.
+
+When adding node kinds, update the enum/sentinels/macros, node validation and
+ownership, iterator leaf mask, every renderer, API/fuzz coverage and parser tests.
+Keep integer image dimensions distinct from percentage dimension text.
 
 ## CMake options
 

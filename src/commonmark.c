@@ -191,6 +191,35 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_DOCUMENT:
     break;
 
+  case CMARK_NODE_ALERT:
+    BLANKLINE();
+    for (i = 0; i < (size_t)node->as.alert.fence_length; ++i)
+      LIT(":");
+    if (entering) {
+      LIT(" ");
+      LIT(cmark_node_get_alert_type(node));
+    }
+    BLANKLINE();
+    break;
+
+  case CMARK_NODE_TOC:
+    BLANKLINE();
+    if (*cmark_node_get_toc_options(node)) {
+      LIT("$<toc");
+      LIT(cmark_node_get_toc_options(node));
+      LIT(">");
+    } else
+      LIT("[toc]");
+    BLANKLINE();
+    break;
+
+  case CMARK_NODE_SUBSCRIPT:
+    LIT("~");
+    break;
+  case CMARK_NODE_SUPERSCRIPT:
+    LIT("^");
+    break;
+
   case CMARK_NODE_BLOCK_QUOTE:
     if (entering) {
       LIT("> ");
@@ -239,6 +268,8 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
         LIT(listmarker);
         renderer->begin_content = true;
       }
+      if (cmark_node_get_task_checked(node) >= 0)
+        LIT(cmark_node_get_task_checked(node) ? "[x] " : "[ ] ");
       if (node->first_child == NULL) {
         BLANKLINE();
       } else {
@@ -324,7 +355,24 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     break;
 
   case CMARK_NODE_TEXT:
-    OUT(cmark_node_get_literal(node), allow_wrap, NORMAL);
+    if (node->parent && (node->parent->type == CMARK_NODE_SUBSCRIPT ||
+                         node->parent->type == CMARK_NODE_SUPERSCRIPT)) {
+      for (bufsize_t pos = 0; pos < node->len;) {
+        unsigned char c = node->data[pos];
+        if (c == ' ' || c == '~' || c == '^' || c == '\\')
+          LIT("\\");
+        int32_t cp;
+        int bytes =
+            cmark_utf8proc_iterate(node->data + pos, node->len - pos, &cp);
+        if (bytes <= 0)
+          bytes = 1;
+        char literal[5] = {0};
+        memcpy(literal, node->data + pos, bytes);
+        LIT(literal);
+        pos += bytes;
+      }
+    } else
+      OUT(cmark_node_get_literal(node), allow_wrap, NORMAL);
     break;
 
   case CMARK_NODE_LINEBREAK:
@@ -507,11 +555,42 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     }
     break;
 
+  case CMARK_NODE_FORMULA_INLINE:
+  case CMARK_NODE_FORMULA_BLOCK: {
+    const char *label = cmark_node_get_formula_label(node);
+    // Keep legacy non-viewer output unchanged; viewer formulas retain their
+    // lossless source spelling and optional equation label on serialization.
+    if (!node->as.formula.viewer && !*label)
+      break;
+    bool block = node->type == CMARK_NODE_FORMULA_BLOCK;
+    bool raw = node->as.formula.environment != NULL;
+    const char *delimiter = cmark_node_get_formula_display(node) ? "$$" : "$";
+    if (block)
+      BLANKLINE();
+    if (!raw) {
+      LIT(delimiter);
+      if (block && (!node->len || node->data[0] != '\n'))
+        CR();
+    }
+    OUT(cmark_node_get_literal(node), false, LITERAL);
+    if (!raw) {
+      if (block)
+        CR();
+      LIT(delimiter);
+    }
+    if (*label) {
+      LIT(" (");
+      OUT(label, false, LITERAL);
+      LIT(")");
+    }
+    if (block)
+      BLANKLINE();
+    break;
+  }
+
   /* Extension nodes — no output in this renderer */
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:
-  case CMARK_NODE_FORMULA_INLINE:
-  case CMARK_NODE_FORMULA_BLOCK:
   case CMARK_NODE_TABLE:
   case CMARK_NODE_TABLE_ROW:
   case CMARK_NODE_TABLE_CELL:

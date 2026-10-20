@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,6 +72,9 @@ typedef struct {
   bufsize_t backticks[MAXBACKTICKS + 1];
   bool scanned_for_backticks;
   bool no_link_openers;
+  bool unescape_table_pipes;
+  bufsize_t dollar_scan_end;
+  bool dollar_scan_has_closer;
 } subject;
 
 static inline bool S_is_line_end_char(char c) {
@@ -225,6 +229,9 @@ static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, 
   }
   e->scanned_for_backticks = false;
   e->no_link_openers = true;
+  e->unescape_table_pipes = false;
+  e->dollar_scan_end = 0;
+  e->dollar_scan_has_closer = false;
 }
 
 static inline int isbacktick(int c) { return (c == '`'); }
@@ -424,11 +431,82 @@ static bufsize_t scan_to_closing_backticks(subject *subj,
   return 0;
 }
 
+static bool math_space_at(subject *subj, bufsize_t pos) {
+  if (pos >= subj->input.len)
+    return false;
+  unsigned char c = subj->input.data[pos];
+  if (c < 0x80)
+    return cmark_isspace(c) != 0;
+  int32_t cp;
+  int bytes = cmark_utf8proc_iterate(subj->input.data + pos,
+                                     subj->input.len - pos, &cp);
+  return bytes > 0 && (cmark_utf8proc_is_space(cp) || cp == 0xfeff);
+}
 
-// Find the first unescaped dollar after an inline formula opener. Never
-// search past a lone dollar or a rejected closer: each dollar-free segment
-// is scanned at most once, even when many formulas are malformed.
-static bufsize_t scan_to_closing_dollar(subject *subj, bufsize_t fence_length) {
+static bufsize_t scan_viewer_closing_dollar(subject *subj,
+                                            bufsize_t fence_length) {
+  bufsize_t start = subj->pos;
+  const unsigned char *data = subj->input.data;
+  if (fence_length == 2) {
+    // The configured double-dollar expression is [^$]*?[^\\], followed by
+    // $$. A third dollar may therefore be the final content character.
+    bufsize_t pos = start;
+    while (pos < subj->input.len && data[pos] != '$' &&
+           !S_is_line_end_char(data[pos]))
+      ++pos;
+    if (pos == subj->input.len || S_is_line_end_char(data[pos]))
+      return 0;
+    if (pos > start && pos + 1 < subj->input.len && data[pos + 1] == '$' &&
+        data[pos - 1] != '\\') {
+      subj->pos = pos + 2;
+      return subj->pos;
+    }
+    if (pos + 2 < subj->input.len && data[pos + 1] == '$' &&
+        data[pos + 2] == '$') {
+      subj->pos = pos + 3;
+      return subj->pos;
+    }
+    return 0;
+  }
+
+  // Single-dollar content may contain rejected dollar candidates. Cache the
+  // next usable closer (or line end), so repeated malformed openers and digit
+  // postcondition failures never rescan the same line quadratically.
+  if (start < subj->dollar_scan_end) {
+    if (!subj->dollar_scan_has_closer)
+      return 0;
+    subj->pos = subj->dollar_scan_end + 1;
+    return subj->pos;
+  }
+  bufsize_t pos = start + 1;
+  for (; pos < subj->input.len; ++pos) {
+    if (S_is_line_end_char(data[pos]) ||
+        (pos + 2 < subj->input.len && data[pos] == 0xe2 &&
+         data[pos + 1] == 0x80 &&
+         (data[pos + 2] == 0xa8 || data[pos + 2] == 0xa9)))
+      break;
+    if (data[pos] != '$' || data[pos - 1] == '\\')
+      continue;
+    bufsize_t previous = pos - 1;
+    while (previous > start && (data[previous] & 0xc0) == 0x80)
+      --previous;
+    if (math_space_at(subj, previous))
+      continue;
+    subj->dollar_scan_end = pos;
+    subj->dollar_scan_has_closer = true;
+    subj->pos = pos + 1;
+    return subj->pos;
+  }
+  subj->dollar_scan_end = pos;
+  subj->dollar_scan_has_closer = false;
+  return 0;
+}
+
+// The default native grammar stops at the first unescaped dollar.
+static bufsize_t scan_to_closing_dollar(subject *subj, bufsize_t fence_length,
+                                        int options) {
+  if (options & CMARK_OPT_VIEWER_COMPAT)
+    return scan_viewer_closing_dollar(subj, fence_length);
   bufsize_t startpos = subj->pos;
 
   // read non dollar
@@ -442,7 +520,7 @@ static bufsize_t scan_to_closing_dollar(subject *subj, bufsize_t fence_length) {
       slash_cnt = 0;
     }
     if (c == '\r' || c == '\n') {
-      // Line break is not allowed.
+      // Native default inline math does not cross lines.
       break;
     }
     advance(subj);
@@ -459,7 +537,6 @@ static bufsize_t scan_to_closing_dollar(subject *subj, bufsize_t fence_length) {
     return 0;
   }
 }
-
 
 // Destructively modify string, converting newlines to
 // spaces, then removing a single leading + trailing space,
@@ -515,6 +592,8 @@ static cmark_node *handle_backticks(subject *subj) {
     cmark_strbuf_set(&buf, subj->input.data + startpos,
                      endpos - startpos - openticks.len);
     S_normalize_code(&buf);
+    if (subj->unescape_table_pipes)
+      cmark_strbuf_unescape_char(&buf, '|');
 
     // VNoteX: let's fix it to include the ticks.
     cmark_node *node = make_literal(subj, CMARK_NODE_CODE, startpos - openticks.len,
@@ -529,7 +608,8 @@ static cmark_node *handle_backticks(subject *subj) {
 
 // Parse dollar inline formula section or raw dollar, return an inline.
 // Assumes that the subject has a dollar at the current position.
-static cmark_node *handle_dollar(subject *subj) {
+static cmark_node *handle_dollar(subject *subj, cmark_node *parent,
+                                 int options) {
   bufsize_t initpos = subj->pos;
   // Prefer a double-dollar opener before applying the single-dollar rule.
   cmark_chunk opener =
@@ -543,19 +623,27 @@ static cmark_node *handle_dollar(subject *subj) {
   // Pre check.
   if (initpos > 0) {
     unsigned char before_char = peek_at(subj, initpos - 1);
-    if ((fence_length == 1 && before_char == '$') ||
-        (before_char >= '0' && before_char <= '9') ||
-        before_char == '\\') {
-      // Not a legal open dollar.
+    if ((fence_length == 1 && before_char == '$' &&
+         !(options & CMARK_OPT_VIEWER_COMPAT)) ||
+        (before_char >= '0' && before_char <= '9') || before_char == '\\') {
+      // The configured rules fail one character at a time, allowing a second
+      // dollar to begin a single-dollar expression after a rejected opener.
+      if (options & CMARK_OPT_VIEWER_COMPAT) {
+        subj->pos = initpos + 1;
+        return make_str(subj, initpos, initpos, cmark_chunk_literal("$"));
+      }
       return make_str(subj, initpos, startpos - 1, opener);
     }
   }
 
-  bufsize_t endpos = scan_to_closing_dollar(subj, fence_length);
-  if (endpos == 0 || endpos - startpos == fence_length) {
-    subj->pos = startpos;
+try_match:
+  if ((options & CMARK_OPT_VIEWER_COMPAT) && fence_length == 1 &&
+      math_space_at(subj, startpos))
     return make_str(subj, initpos, startpos - 1, opener);
-  }
+
+  bufsize_t endpos = scan_to_closing_dollar(subj, fence_length, options);
+  if (endpos == 0 || endpos - startpos == fence_length)
+    goto no_match;
 
   // Double-dollar content may end in whitespace; single-dollar rules stay
   // unchanged. Neither form accepts a digit immediately after its closer.
@@ -563,25 +651,75 @@ static cmark_node *handle_dollar(subject *subj) {
   unsigned char after_char =
       endpos < subj->input.len ? peek_at(subj, endpos) : 0;
   if ((fence_length == 1 && (before_char == ' ' || before_char == '\t')) ||
-      (after_char >= '0' && after_char <= '9')) {
-    subj->pos = startpos;
-    return make_str(subj, initpos, startpos - 1, opener);
-  }
+      ((options & CMARK_OPT_VIEWER_COMPAT) && before_char == '\\') ||
+      (after_char >= '0' && after_char <= '9'))
+    goto no_match;
 
   cmark_strbuf buf = CMARK_BUF_INIT(subj->mem);
 
   cmark_strbuf_set(&buf, subj->input.data + startpos,
                    endpos - startpos - fence_length);
-  cmark_strbuf_unescape_char(&buf, '$');
+  if (!(options & CMARK_OPT_VIEWER_COMPAT))
+    cmark_strbuf_unescape_char(&buf, '$');
+  if (subj->unescape_table_pipes)
+    cmark_strbuf_unescape_char(&buf, '|');
 
   cmark_node *node = make_literal(subj, CMARK_NODE_FORMULA_INLINE, startpos,
                                    endpos - fence_length - 1);
   node->as.formula.fence_length = (uint8_t)fence_length;
+  node->as.formula.viewer = (options & CMARK_OPT_VIEWER_COMPAT) != 0;
   node->len = buf.size;
   node->data = cmark_strbuf_detach(&buf);
+  if (options & CMARK_OPT_VIEWER_COMPAT) {
+    subj_line_column_at(subj, initpos, endpos - fence_length - 1,
+                        &node->end_line, &node->end_column);
+    subj_catch_up_newlines(subj, initpos);
+    if (fence_length == 2 && parent->type == CMARK_NODE_PARAGRAPH) {
+      bufsize_t line_start = initpos, tag = endpos;
+      while (line_start > 0 && (subj->input.data[line_start - 1] == ' ' ||
+                                subj->input.data[line_start - 1] == '\t'))
+        --line_start;
+      if (line_start == 0 ||
+          S_is_line_end_char(subj->input.data[line_start - 1])) {
+        while (tag < subj->input.len &&
+               (subj->input.data[tag] == ' ' || subj->input.data[tag] == '\t'))
+          ++tag;
+        if (tag < subj->input.len && subj->input.data[tag] == '(') {
+          bufsize_t label = ++tag;
+          while (tag < subj->input.len && subj->input.data[tag] != ')' &&
+                 !math_space_at(subj, tag))
+            ++tag;
+          if (tag > label && tag < subj->input.len &&
+              subj->input.data[tag] == ')') {
+            bufsize_t label_end = tag++;
+            while (tag < subj->input.len && (subj->input.data[tag] == ' ' ||
+                                             subj->input.data[tag] == '\t'))
+              ++tag;
+            if (tag == subj->input.len ||
+                S_is_line_end_char(subj->input.data[tag])) {
+              node->as.formula.label =
+                  (unsigned char *)subj->mem->calloc(label_end - label + 1, 1);
+              memcpy(node->as.formula.label, subj->input.data + label,
+                     label_end - label);
+              subj->pos = tag;
+            }
+          }
+        }
+      }
+    }
+  }
   return node;
-}
 
+no_match:
+  if ((options & CMARK_OPT_VIEWER_COMPAT) && fence_length == 2) {
+    fence_length = 1;
+    opener = cmark_chunk_literal("$");
+    subj->pos = startpos = initpos + 1;
+    goto try_match;
+  }
+  subj->pos = startpos;
+  return make_str(subj, initpos, startpos - 1, opener);
+}
 
 // Scan ***, **, or * and return number scanned, or 0.
 // Advances position.
@@ -1031,7 +1169,11 @@ static cmark_node *handle_backslash(subject *subj) {
   if (cmark_ispunct(
           nextchar)) { // only ascii symbols and newline can be escaped
     advance(subj);
-    return make_str(subj, subj->pos - 2, subj->pos - 1, cmark_chunk_dup(&subj->input, subj->pos - 1, 1));
+    cmark_node *node =
+        make_str(subj, subj->pos - 2, subj->pos - 1,
+                 cmark_chunk_dup(&subj->input, subj->pos - 1, 1));
+    node->flags |= CMARK_NODE__LITERAL_ESCAPE;
+    return node;
   } else if (!is_eof(subj) && skip_line_end(subj)) {
     return make_linebreak(subj->mem);
   } else {
@@ -1095,7 +1237,7 @@ unsigned char *cmark_clean_title(cmark_mem *mem, cmark_chunk *title) {
 
 // Parse an autolink or HTML tag.
 // Assumes the subject has a '<' character at the current position.
-static cmark_node *handle_pointy_brace(subject *subj) {
+static cmark_node *handle_pointy_brace(subject *subj, int options) {
   bufsize_t matchlen = 0;
   cmark_chunk contents;
 
@@ -1118,6 +1260,10 @@ static cmark_node *handle_pointy_brace(subject *subj) {
 
     return make_autolink(subj, subj->pos - 1 - matchlen, subj->pos - 1, contents, 1);
   }
+
+  if (options & CMARK_OPT_HTML_AS_TEXT)
+    return make_str(subj, subj->pos - 1, subj->pos - 1,
+                    cmark_chunk_literal("<"));
 
   // finally, try to match an html tag
   if (subj->pos + 2 <= subj->input.len) {
@@ -1314,6 +1460,43 @@ static bufsize_t manual_scan_link_url(cmark_chunk *input, bufsize_t offset,
   return i - offset;
 }
 
+// Viewer dimensions retain percentages without changing the integer API.
+static bufsize_t scan_viewer_dimensions(cmark_chunk *input, bufsize_t start,
+                                        bufsize_t *split, int *width,
+                                        int *height) {
+  bufsize_t pos = start;
+  if (pos >= input->len || input->data[pos++] != '=')
+    return 0;
+  for (int dimension = 0; dimension < 2; ++dimension) {
+    int value = 0;
+    bufsize_t digits = pos;
+    while (pos < input->len && cmark_isdigit(input->data[pos])) {
+      int digit = input->data[pos++] - '0';
+      value = value > (INT_MAX - digit) / 10 ? INT_MAX : value * 10 + digit;
+    }
+    if (pos > digits && pos < input->len && input->data[pos] == '%') {
+      ++pos;
+      value = 0; // Percentages have no absolute-pixel integer value.
+    }
+    if (!dimension) {
+      if (pos >= input->len || input->data[pos] != 'x')
+        return 0;
+      *split = pos++;
+      *width = value;
+    } else {
+      *height = value;
+    }
+  }
+  return pos - start;
+}
+
+static unsigned char *copy_span(cmark_mem *mem, const unsigned char *data,
+                                bufsize_t len) {
+  unsigned char *copy = (unsigned char *)mem->calloc(len + 1, 1);
+  memcpy(copy, data, len);
+  return copy;
+}
+
 // Return a link, an image, or a literal close bracket.
 static cmark_node *handle_close_bracket(subject *subj, int options) {
   bufsize_t initial_pos, after_link_text_pos = 0;
@@ -1325,6 +1508,7 @@ static cmark_node *handle_close_bracket(subject *subj, int options) {
   cmark_chunk url_chunk, title_chunk;
   unsigned char *url, *title;
   int width = 0, height = 0;
+  bufsize_t size_start = 0, size_split = 0, size_end = 0;
   bracket *opener;
   cmark_node *inl;
   cmark_chunk raw_label;
@@ -1400,8 +1584,20 @@ static cmark_node *handle_close_bracket(subject *subj, int options) {
       bufsize_t startsize = endtitle + scan_spacechars(&subj->input, endtitle);
     // ensure there are spaces between title (or url if title is empty) and size info
       int has_space = (starttitle == endtitle) ? starttitle > endurl : startsize > endtitle;
-      bufsize_t endsize = !has_space ? startsize
-                                     : startsize + scan_image_size(&subj->input, startsize, &pstruct);
+      bufsize_t endsize = startsize;
+      if (has_space) {
+        if (options & CMARK_OPT_VIEWER_COMPAT) {
+          bufsize_t size_len = scan_viewer_dimensions(
+              &subj->input, startsize, &size_split, &width, &height);
+          if (size_len) {
+            size_start = startsize + 1;
+            size_end = startsize + size_len;
+            endsize = size_end;
+          }
+        } else {
+          endsize += scan_image_size(&subj->input, startsize, &pstruct);
+        }
+      }
       endall = endsize + scan_spacechars(&subj->input, endsize);
     } else {
       endall = endtitle + scan_spacechars(&subj->input, endtitle);
@@ -1424,6 +1620,8 @@ static cmark_node *handle_close_bracket(subject *subj, int options) {
 
     } else {
       // it could still be a shortcut reference link
+      size_end = 0;
+      width = height = 0;
       subj->pos = after_link_text_pos;
     }
   }
@@ -1470,6 +1668,13 @@ match:
   inl->as.link.title = title;
   inl->as.link.width = width;
   inl->as.link.height = height;
+  if (is_image && size_end) {
+    inl->as.link.width_text = copy_span(
+        subj->mem, subj->input.data + size_start, size_split - size_start);
+    inl->as.link.height_text =
+        copy_span(subj->mem, subj->input.data + size_split + 1,
+                  size_end - size_split - 1);
+  }
   // The link text's newlines were consumed by parse_inline(), so subj->line and
   // subj->column_offset are accurate as of `after_link_text_pos`. Derive every
   // position below from that reference point before mutating the subject.
@@ -1619,6 +1824,16 @@ static cmark_node *handle_footnote_ref(subject *subj) {
   if (footnote->number == 0) {
     footnote->number = subj->footnote_map->next_number++;
     footnote->def_node->as.footnote_def.number = footnote->number;
+    cmark_footnote_map *map = subj->footnote_map;
+    if (map->collect_references) {
+      if (map->pending_size == map->pending_capacity) {
+        map->pending_capacity =
+            map->pending_capacity ? map->pending_capacity * 2 : 8;
+        map->pending = (cmark_node **)map->mem->realloc(
+            map->pending, map->pending_capacity * sizeof(*map->pending));
+      }
+      map->pending[map->pending_size++] = footnote->def_node;
+    }
   }
 
   // Create FOOTNOTE_REFERENCE node
@@ -1722,6 +1937,70 @@ static cmark_node *handle_wikilink(subject *subj) {
   return node;
 }
 
+// Sub/sup plugins contain literal text, not recursively parsed Markdown.
+// Backslash-escaped whitespace is allowed; unescaped whitespace is not.
+static cmark_node *handle_script(subject *subj, unsigned char marker) {
+  bufsize_t start = subj->pos, pos = start + 1;
+  if (pos >= subj->input.len || subj->input.data[pos] == marker)
+    return NULL;
+  while (pos < subj->input.len) {
+    unsigned char c = subj->input.data[pos];
+    if (c == '\\' && pos + 1 < subj->input.len) {
+      pos += 2;
+      continue;
+    }
+    if (c == marker)
+      break;
+    if (cmark_isspace(c))
+      return NULL;
+    if (c == '`') {
+      bufsize_t ticks = 1, scan, end;
+      while (pos + ticks < subj->input.len &&
+             subj->input.data[pos + ticks] == '`')
+        ++ticks;
+      scan = pos + ticks;
+      while (scan < subj->input.len) {
+        if (subj->input.data[scan] != '`') {
+          ++scan;
+          continue;
+        }
+        end = scan;
+        while (end < subj->input.len && subj->input.data[end] == '`')
+          ++end;
+        if (end - scan == ticks) {
+          pos = end;
+          break;
+        }
+        scan = end;
+      }
+      if (scan < subj->input.len)
+        continue;
+    }
+    ++pos;
+  }
+  if (pos >= subj->input.len || pos == start + 1)
+    return NULL;
+  cmark_strbuf text = CMARK_BUF_INIT(subj->mem);
+  for (bufsize_t i = start + 1; i < pos; ++i) {
+    unsigned char c = subj->input.data[i];
+    if (cmark_isspace(c)) {
+      cmark_strbuf_free(&text);
+      return NULL;
+    }
+    if (c == '\\' && i + 1 < pos &&
+        (cmark_ispunct(subj->input.data[i + 1]) ||
+         subj->input.data[i + 1] == ' '))
+      c = subj->input.data[++i];
+    cmark_strbuf_putc(&text, c);
+  }
+  cmark_node *node = make_literal(
+      subj, marker == '~' ? CMARK_NODE_SUBSCRIPT : CMARK_NODE_SUPERSCRIPT,
+      start, pos);
+  append_child(node, make_str_from_buf(subj, start + 1, pos - 1, &text));
+  subj->pos = pos + 1;
+  return node;
+}
+
 // Parse an inline, advancing subject, and add it as a child of parent.
 // Return 0 if no inline can be parsed, 1 otherwise.
 static int parse_inline(subject *subj, cmark_node *parent, int options) {
@@ -1744,7 +2023,7 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
   case '$':
     if (options & CMARK_OPT_NO_EXTENSIONS)
       goto text;
-    new_inl = handle_dollar(subj);
+    new_inl = handle_dollar(subj, parent, options);
     break;
   case '\\':
     new_inl = handle_backslash(subj);
@@ -1753,9 +2032,14 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
     new_inl = handle_entity(subj);
     break;
   case '<':
-    new_inl = handle_pointy_brace(subj);
+    new_inl = handle_pointy_brace(subj, options);
     break;
   case '~':
+    if (!(options & CMARK_OPT_NO_EXTENSIONS) &&
+        (options & CMARK_OPT_SUBSCRIPT) &&
+        (new_inl = handle_script(subj, '~')) != NULL)
+      break;
+    // fall through
   case '=':
     if (options & CMARK_OPT_NO_EXTENSIONS)
       goto text;
@@ -1806,6 +2090,11 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
   case '^':
     if (options & CMARK_OPT_NO_EXTENSIONS)
       goto text;
+    if ((options & CMARK_OPT_SUPERSCRIPT) &&
+        (subj->pos + 1 >= subj->input.len ||
+         peek_at(subj, subj->pos + 1) != '[') &&
+        (new_inl = handle_script(subj, '^')) != NULL)
+      break;
     advance(subj);
     if (peek_char(subj) == '[' && subj->footnote_map != NULL) {
       advance(subj); // skip '['
@@ -1828,13 +2117,651 @@ static int parse_inline(subject *subj, cmark_node *parent, int options) {
       cmark_chunk_rtrim(&contents);
     }
 
-    new_inl = make_str(subj, startpos, endpos - 1, contents);
+    int text_end = endpos - 1;
+    if ((options & CMARK_OPT_LINKIFY) && !(options & CMARK_OPT_NO_EXTENSIONS))
+      text_end = startpos + contents.len - 1;
+    new_inl = make_str(subj, startpos, text_end, contents);
   }
   if (new_inl != NULL) {
     append_child(parent, new_inl);
   }
 
   return 1;
+}
+
+// Linkification runs only after emphasis/link parsing has fixed the tree.
+// Its source cursor walks the original text nodes monotonically, so entity
+// expansion and punctuation-node joins never manufacture out-of-range spans.
+typedef struct {
+  cmark_node *node;
+  bufsize_t offset;
+} linkify_source;
+
+static unsigned char ascii_lower(unsigned char c) {
+  return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+}
+
+static bool ascii_alnum(unsigned char c) {
+  return cmark_isalpha(c) || cmark_isdigit(c);
+}
+
+static bool ascii_hex(unsigned char c) {
+  c = ascii_lower(c);
+  return cmark_isdigit(c) || (c >= 'a' && c <= 'f');
+}
+
+static bool ascii_equal(const unsigned char *data, bufsize_t len,
+                        const char *word) {
+  if ((bufsize_t)strlen(word) != len)
+    return false;
+  for (bufsize_t i = 0; i < len; ++i)
+    if (ascii_lower(data[i]) != (unsigned char)word[i])
+      return false;
+  return true;
+}
+
+static int linkify_character(const unsigned char *data, bufsize_t len,
+                             bool domain) {
+  if (!len)
+    return 0;
+  if (data[0] < 0x80)
+    return ascii_alnum(data[0]) || data[0] == '-' ||
+                   (!domain && strchr("_;:&=+$,.\"", data[0]))
+               ? 1
+               : 0;
+  if (!domain)
+    return 0; // Frozen email local parts are ASCII; hosts may be IDN.
+  int32_t codepoint = 0;
+  int bytes = cmark_utf8proc_iterate(data, len, &codepoint);
+  bool symbol_domain = (codepoint >= 0x1f000 && codepoint <= 0x1faff) ||
+                       (codepoint >= 0x2600 && codepoint <= 0x27ff);
+  return bytes > 0 && !cmark_utf8proc_is_space(codepoint) &&
+                 (symbol_domain ||
+                  !cmark_utf8proc_is_punctuation_or_symbol(codepoint))
+             ? bytes
+             : 0;
+}
+
+static bool fuzzy_tld(const unsigned char *data, bufsize_t len) {
+  static const char *const names[] = {"biz",
+                                      "com",
+                                      "edu",
+                                      "gov",
+                                      "net",
+                                      "org",
+                                      "pro",
+                                      "web",
+                                      "xxx",
+                                      "aero",
+                                      "asia",
+                                      "coop",
+                                      "info",
+                                      "museum",
+                                      "name",
+                                      "shop",
+                                      "\xd1\x80\xd1\x84"};
+  if (len < 2)
+    return false;
+  if (len == 4 &&
+      ((data[0] == 0xd1 && data[1] == 0x80) ||
+       (data[0] == 0xd0 && data[1] == 0xa0)) &&
+      ((data[2] == 0xd1 && data[3] == 0x84) ||
+       (data[2] == 0xd0 && data[3] == 0xa4)))
+    return true;
+  if (len > 4 && len <= 63 && ascii_equal(data, 4, "xn--"))
+    return true;
+  // Frozen linkify-it country-code suffixes, not arbitrary two-letter words.
+  static const char *const country_codes[26] = {"cdefgilmnoqrstuwxz",
+                                                "abdefghijmnorstvwyz",
+                                                "acdfghiklmnoruvwxyz",
+                                                "ejkmoz",
+                                                "cegrstu",
+                                                "ijkmor",
+                                                "abdefghilmnpqrstuwy",
+                                                "kmnrtu",
+                                                "delmnoqrst",
+                                                "emop",
+                                                "eghimnprwyz",
+                                                "abcikrstuvy",
+                                                "acdeghklmnopqrstuvwxyz",
+                                                "acefgilopruz",
+                                                "m",
+                                                "aefghklmnrstwy",
+                                                "a",
+                                                "eosuw",
+                                                "abcdeghijklmnortuvxyz",
+                                                "cdfghjklmnortvwz",
+                                                "agksyz",
+                                                "aceginu",
+                                                "fs",
+                                                "",
+                                                "et",
+                                                "amw"};
+  unsigned char first = ascii_lower(data[0]), second = ascii_lower(data[1]);
+  if (len == 2 && first >= 'a' && first <= 'z' &&
+      strchr(country_codes[first - 'a'], second))
+    return true;
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+    if (ascii_equal(data, len, names[i]))
+      return true;
+  return false;
+}
+
+static bufsize_t linkify_host(const unsigned char *data, bufsize_t len,
+                              bool fuzzy) {
+  bufsize_t pos = 0, label = 0, last_label = 0;
+  int dots = 0, characters = 0;
+  while (pos < len) {
+    int bytes = linkify_character(data + pos, len - pos, true);
+    if (bytes) {
+      if (++characters > 63 || (pos == label && data[pos] == '-'))
+        return 0;
+      pos += bytes;
+      continue;
+    }
+    if (data[pos] != '.' || pos == label || data[pos - 1] == '-')
+      break;
+    // A sentence-final period is not part of the hostname.
+    if (pos + 1 >= len ||
+        !linkify_character(data + pos + 1, len - pos - 1, true))
+      break;
+    ++dots;
+    characters = 0;
+    last_label = label = ++pos;
+  }
+  if (!pos || data[0] == '-' || data[pos - 1] == '-' || data[pos - 1] == '_')
+    return 0;
+  if (fuzzy && (!dots || !fuzzy_tld(data + last_label, pos - last_label)))
+    return 0;
+  if (pos < len && (data[pos] == '-' || data[pos] == '_' ||
+                    (data[pos] == '.' && pos + 1 < len &&
+                     (data[pos + 1] == '-' ||
+                      linkify_character(data + pos + 1, len - pos - 1, true)))))
+    return 0;
+  return pos;
+}
+
+static bool linkify_space(const unsigned char *data, bufsize_t len) {
+  if (!len)
+    return true;
+  if (data[0] < 0x80)
+    return data[0] < 0x20 || data[0] == 0x7f || cmark_isspace(data[0]);
+  int32_t cp;
+  int bytes = cmark_utf8proc_iterate(data, len, &cp);
+  return bytes <= 0 || cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) ||
+         cmark_utf8proc_is_space(cp);
+}
+
+static bufsize_t linkify_path(const unsigned char *data, bufsize_t len,
+                              bufsize_t pos) {
+  // The initial slash may stand alone. A bare trailing ? or # does not.
+  bufsize_t start = pos++;
+  while (pos < len) {
+    unsigned char c = data[pos];
+    if (linkify_space(data + pos, len - pos) || c == '<' || c == '>' ||
+        c == '\\')
+      break;
+    if (c >= 0x80) {
+      int32_t cp;
+      int bytes = cmark_utf8proc_iterate(data + pos, len - pos, &cp);
+      if (cp == 0xff5c)
+        break;
+      pos += bytes;
+      continue;
+    }
+    if (strchr(")]}", c))
+      break;
+    if (strchr("([{\"'", c)) {
+      unsigned char closer = c == '('   ? ')'
+                             : c == '[' ? ']'
+                             : c == '{' ? '}'
+                                        : c;
+      bufsize_t end = pos + 1;
+      int depth = 1;
+      while (end < len && !linkify_space(data + end, len - end)) {
+        if (c != closer && data[end] == c)
+          ++depth;
+        if (data[end] == closer && --depth == 0)
+          break;
+        if (data[end] < 0x80)
+          ++end;
+        else {
+          int32_t cp;
+          end += cmark_utf8proc_iterate(data + end, len - end, &cp);
+        }
+      }
+      if (end < len && data[end] == closer && (end > pos + 1 || c != closer)) {
+        pos = end + 1;
+        continue;
+      }
+      if (c == '\'' && pos + 1 < len &&
+          linkify_character(data + pos + 1, len - pos - 1, true)) {
+        ++pos;
+        continue;
+      }
+      break;
+    }
+    if (c == '.') {
+      bufsize_t end = pos + 1;
+      while (end < len && data[end] == '.')
+        ++end;
+      if (end == len || linkify_space(data + end, len - end))
+        break;
+      if (end - pos > 1 && !ascii_alnum(data[end]) && !strchr("%/&", data[end]))
+        break;
+      pos = end;
+      continue;
+    }
+    if (c == ',' || c == ';' || c == '?' || c == '!') {
+      bufsize_t end = pos + 1;
+      if (c == '!')
+        while (end < len && data[end] == '!')
+          ++end;
+      if (end == len || linkify_space(data + end, len - end) ||
+          (c == '?' && data[end] == '?'))
+        break;
+      pos = end;
+      continue;
+    }
+    ++pos;
+  }
+  return pos == start + 1 && data[start] != '/' ? start : pos;
+}
+
+static bufsize_t linkify_ipv4(const unsigned char *data, bufsize_t len) {
+  bufsize_t pos = 0;
+  for (int part = 0; part < 4; ++part) {
+    unsigned int value = 0;
+    bufsize_t start = pos;
+    while (pos < len && cmark_isdigit(data[pos]) && pos - start < 3)
+      value = value * 10 + data[pos++] - '0';
+    if (pos == start || value > 255)
+      return 0;
+    if (part < 3 && (pos >= len || data[pos++] != '.'))
+      return 0;
+  }
+  if (pos < len &&
+      (linkify_character(data + pos, len - pos, true) || data[pos] == '.'))
+    return 0;
+  return pos;
+}
+
+// Return a match length and a normalization prefix (NULL for no match).
+static bufsize_t linkify_match(const unsigned char *data, bufsize_t len,
+                               bool fuzzy_allowed, bool email_allowed,
+                               const char **prefix, bufsize_t *host_start,
+                               bufsize_t *host_end) {
+  bufsize_t start = 0, end = 0;
+  bool explicit_url = false;
+  *prefix = NULL;
+  if (len >= 7 && ascii_equal(data, 7, "http://")) {
+    start = 7;
+    explicit_url = true;
+  } else if (len >= 8 && ascii_equal(data, 8, "https://")) {
+    start = 8;
+    explicit_url = true;
+  } else if (len >= 6 && ascii_equal(data, 6, "ftp://")) {
+    start = 6;
+    explicit_url = true;
+  } else if (len >= 2 && data[0] == '/' && data[1] == '/') {
+    start = 2;
+    explicit_url = true;
+  }
+  bool mailto = len >= 7 && ascii_equal(data, 7, "mailto:");
+  if (mailto)
+    start = 7;
+  if (!explicit_url && (mailto || email_allowed)) {
+    bufsize_t local = start;
+    while (local < len && (local != start || data[local] != '"')) {
+      int bytes = linkify_character(data + local, len - local, false);
+      if (!bytes)
+        break;
+      local += bytes;
+    }
+    if (local > start && local < len && data[local] == '@') {
+      bufsize_t host = linkify_host(data + local + 1, len - local - 1, !mailto);
+      if (!host)
+        host = linkify_ipv4(data + local + 1, len - local - 1);
+      if (host) {
+        *prefix = mailto ? "" : "mailto:";
+        *host_start = local + 1;
+        *host_end = local + 1 + host;
+        return *host_end;
+      }
+    }
+    if (mailto)
+      return 0;
+  } else if (explicit_url) {
+    // Optional userinfo belongs to the URL, not the host.
+    bufsize_t authority = start;
+    while (authority < len && !cmark_isspace(data[authority]) &&
+           data[authority] != '/' && data[authority] != '?' &&
+           data[authority] != '#') {
+      if (data[authority] == '@')
+        start = authority + 1;
+      ++authority;
+    }
+  }
+  if (!explicit_url && !fuzzy_allowed)
+    return 0;
+  if (start < len && data[start] == '[' && explicit_url) {
+    end = start + 1;
+    while (end < len &&
+           (ascii_hex(data[end]) || data[end] == ':' || data[end] == '.'))
+      ++end;
+    if (end == start + 1 || end >= len || data[end] != ']')
+      return 0;
+    ++end;
+  } else {
+    bufsize_t host = linkify_host(data + start, len - start, !explicit_url);
+    if (!host)
+      return 0;
+    end = start + host;
+  }
+  *host_start = start;
+  *host_end = end;
+  if (end < len && data[end] == ':' && end + 1 < len &&
+      cmark_isdigit(data[end + 1])) {
+    ++end;
+    unsigned int port = 0;
+    bufsize_t port_start = end;
+    while (end < len && cmark_isdigit(data[end])) {
+      if (end - port_start >= 5)
+        return 0;
+      port = port * 10 + data[end++] - '0';
+    }
+    if (port > 65535)
+      return 0;
+  }
+  if (end < len && (data[end] == '/' || data[end] == '?' || data[end] == '#'))
+    end = linkify_path(data, len, end);
+  *prefix = explicit_url ? "" : "http://";
+  return end;
+}
+
+static unsigned int puny_adapt(uint64_t delta, unsigned int points,
+                               bool first) {
+  unsigned int k = 0;
+  delta = first ? delta / 700 : delta / 2;
+  delta += delta / points;
+  while (delta > 455) {
+    delta /= 35;
+    k += 36;
+  }
+  return k + (unsigned int)(36 * delta / (delta + 38));
+}
+
+static void linkify_label(cmark_strbuf *url, const unsigned char *data,
+                          bufsize_t len) {
+  int32_t points[256];
+  unsigned int count = 0, basic = 0;
+  for (bufsize_t pos = 0; pos < len;) {
+    int32_t cp;
+    int bytes = cmark_utf8proc_iterate(data + pos, len - pos, &cp);
+    if (bytes <= 0 || count == 256) {
+      cmark_strbuf_put(url, data, len);
+      return;
+    }
+    points[count++] = cp;
+    if (cp < 128)
+      ++basic;
+    pos += bytes;
+  }
+  if (basic == count) {
+    cmark_strbuf_put(url, data, len);
+    return;
+  }
+  cmark_strbuf_puts(url, "xn--");
+  for (unsigned int i = 0; i < count; ++i)
+    if (points[i] < 128)
+      cmark_strbuf_putc(url, ascii_lower((unsigned char)points[i]));
+  if (basic)
+    cmark_strbuf_putc(url, '-');
+  uint64_t delta = 0;
+  unsigned int n = 128, bias = 72, handled = basic;
+  while (handled < count) {
+    unsigned int next = UINT_MAX;
+    for (unsigned int i = 0; i < count; ++i)
+      if ((unsigned int)points[i] >= n && (unsigned int)points[i] < next)
+        next = points[i];
+    delta += (uint64_t)(next - n) * (handled + 1);
+    n = next;
+    for (unsigned int i = 0; i < count; ++i) {
+      if ((unsigned int)points[i] < n)
+        ++delta;
+      if ((unsigned int)points[i] == n) {
+        uint64_t q = delta;
+        for (unsigned int k = 36;; k += 36) {
+          unsigned int t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
+          if (q < t)
+            break;
+          unsigned int digit = t + (unsigned int)((q - t) % (36 - t));
+          cmark_strbuf_putc(url, digit < 26 ? 'a' + digit : '0' + digit - 26);
+          q = (q - t) / (36 - t);
+        }
+        cmark_strbuf_putc(url, q < 26 ? 'a' + (int)q : '0' + (int)q - 26);
+        bias = puny_adapt(delta, handled + 1, handled == basic);
+        delta = 0;
+        ++handled;
+      }
+    }
+    ++delta;
+    ++n;
+  }
+}
+
+static unsigned char *linkify_url(cmark_mem *mem, const unsigned char *data,
+                                  bufsize_t len, const char *prefix,
+                                  bufsize_t host_start, bufsize_t host_end) {
+  cmark_strbuf url = CMARK_BUF_INIT(mem);
+  cmark_strbuf_puts(&url, prefix);
+  cmark_strbuf_put(&url, data, host_start);
+  bufsize_t label = host_start;
+  for (bufsize_t pos = host_start; pos <= host_end; ++pos) {
+    if (pos == host_end || data[pos] == '.') {
+      linkify_label(&url, data + label, pos - label);
+      if (pos != host_end)
+        cmark_strbuf_putc(&url, '.');
+      label = pos + 1;
+    }
+  }
+  static const char hex[] = "0123456789ABCDEF";
+  for (bufsize_t pos = host_end; pos < len; ++pos) {
+    unsigned char c = data[pos];
+    if (c >= 0x80 || c == ' ' || strchr("\"[]{}\\`", c) ||
+        (c == '%' && (pos + 2 >= len || !ascii_hex(data[pos + 1]) ||
+                      !ascii_hex(data[pos + 2])))) {
+      cmark_strbuf_putc(&url, '%');
+      cmark_strbuf_putc(&url, hex[c >> 4]);
+      cmark_strbuf_putc(&url, hex[c & 15]);
+    } else
+      cmark_strbuf_putc(&url, c);
+  }
+  return cmark_strbuf_detach(&url);
+}
+
+static void linkify_position(linkify_source *source, bufsize_t offset, bool end,
+                             int *line, int *column) {
+  while (source->node->next && offset >= source->offset + source->node->len) {
+    source->offset += source->node->len;
+    source->node = source->node->next;
+  }
+  cmark_node *node = source->node;
+  *line = end ? node->end_line : node->start_line;
+  if (node->start_line == node->end_line &&
+      node->end_column - node->start_column + 1 == node->len)
+    *column = node->start_column + offset - source->offset;
+  else
+    *column = end ? node->end_column : node->start_column;
+}
+
+static cmark_node *linkify_text(cmark_node *before, linkify_source *source,
+                                const unsigned char *data, bufsize_t start,
+                                bufsize_t end) {
+  cmark_node *text = make_simple(before->mem, CMARK_NODE_TEXT);
+  text->len = end - start;
+  text->data = copy_span(before->mem, data + start, text->len);
+  linkify_position(source, start, false, &text->start_line,
+                   &text->start_column);
+  linkify_position(source, end - 1, true, &text->end_line, &text->end_column);
+  return text;
+}
+
+static bufsize_t linkify_previous_character(const unsigned char *data,
+                                            bufsize_t pos) {
+  bufsize_t start = pos - 1;
+  while (start > 0 && (data[start] & 0xc0) == 0x80)
+    --start;
+  return start;
+}
+
+static bool linkify_word_before(const unsigned char *data, bufsize_t pos) {
+  if (!pos)
+    return false;
+  bufsize_t start = linkify_previous_character(data, pos);
+  return linkify_character(data + start, pos - start, true) > 0 ||
+         (data[start] < 0x80 && strchr("_@/\\", data[start]));
+}
+
+static bool linkify_email_boundary(const unsigned char *data, bufsize_t pos) {
+  if (!pos)
+    return true;
+  bufsize_t start = linkify_previous_character(data, pos);
+  if (data[start] < 0x80)
+    return cmark_isspace(data[start]) || strchr("><\"(", data[start]);
+  int32_t cp;
+  int bytes = cmark_utf8proc_iterate(data + start, pos - start, &cp);
+  return bytes > 0 && (cmark_utf8proc_is_space(cp) || cp == 0xff5c);
+}
+
+static void linkify_run(cmark_node *first, cmark_node *after) {
+  cmark_strbuf joined = CMARK_BUF_INIT(first->mem);
+  const unsigned char *data = first->data;
+  bufsize_t len = first->len;
+  if (first->next != after) {
+    bool candidate = false;
+    len = 0;
+    for (cmark_node *node = first; node != after; node = node->next) {
+      len += node->len;
+      if (!candidate && node->len)
+        candidate = memchr(node->data, '.', node->len) ||
+                    memchr(node->data, '@', node->len) ||
+                    memchr(node->data, ':', node->len);
+    }
+    if (!candidate)
+      return;
+    cmark_strbuf_grow(&joined, len);
+    for (cmark_node *node = first; node != after; node = node->next)
+      cmark_strbuf_put(&joined, node->data, node->len);
+    data = joined.ptr;
+    len = joined.size;
+  }
+  linkify_source source = {first, 0};
+  bufsize_t emitted = 0;
+  bool changed = false;
+  for (bufsize_t pos = 0; pos < len;) {
+    if (pos == 0 && first->prev &&
+        (first->prev->flags & CMARK_NODE__LITERAL_ESCAPE) && first->prev->len &&
+        strchr(".:/\\-_@", first->prev->data[first->prev->len - 1]) &&
+        !linkify_space(data, len)) {
+      while (pos < len && !linkify_space(data + pos, len - pos))
+        ++pos;
+      continue;
+    }
+    if (linkify_word_before(data, pos)) {
+      ++pos;
+      continue;
+    }
+    const char *prefix;
+    bufsize_t host_start, host_end;
+    bool fuzzy_allowed = pos == 0 || !strchr(".:/\\-_@", data[pos - 1]);
+    bool email_allowed = linkify_email_boundary(data, pos);
+    bufsize_t matched =
+        linkify_match(data + pos, len - pos, fuzzy_allowed, email_allowed,
+                      &prefix, &host_start, &host_end);
+    if (!matched) {
+      if (linkify_character(data + pos, len - pos, true) || data[pos] == '.') {
+        // Skip only the failed word, never a word after a separator. Starting
+        // this loop on whitespace would skip the next possible URL entirely.
+        do {
+          ++pos;
+        } while (pos < len && (linkify_character(data + pos, len - pos, true) ||
+                               data[pos] == '.'));
+      } else {
+        ++pos;
+      }
+      continue;
+    }
+    if (pos > emitted) {
+      cmark_node *text = linkify_text(first, &source, data, emitted, pos);
+      cmark_node_insert_before(first, text);
+    }
+    cmark_node *link = make_simple(first->mem, CMARK_NODE_LINK);
+    cmark_node *text = linkify_text(first, &source, data, pos, pos + matched);
+    link->start_line = link->as.link.url_start_line = text->start_line;
+    link->start_column = link->as.link.url_start_column = text->start_column;
+    link->end_line = link->as.link.url_end_line = text->end_line;
+    link->end_column = link->as.link.url_end_column = text->end_column;
+    link->as.link.url = linkify_url(first->mem, data + pos, matched, prefix,
+                                    host_start, host_end);
+    append_child(link, text);
+    cmark_node_insert_before(first, link);
+    emitted = pos += matched;
+    changed = true;
+  }
+  if (changed) {
+    if (emitted < len) {
+      cmark_node *text = linkify_text(first, &source, data, emitted, len);
+      cmark_node_insert_before(first, text);
+    }
+    while (first != after) {
+      cmark_node *next = first->next;
+      cmark_node_free(first);
+      first = next;
+    }
+  }
+  cmark_strbuf_free(&joined);
+}
+
+static void linkify_inlines(cmark_node *parent) {
+  cmark_iter *iter = cmark_iter_new(parent);
+  cmark_event_type event;
+  int html_depth = 0;
+  while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    if (event != CMARK_EVENT_ENTER)
+      continue;
+    cmark_node *node = cmark_iter_get_node(iter);
+    if (node->type == CMARK_NODE_LINK || node->type == CMARK_NODE_WIKILINK ||
+        node->type == CMARK_NODE_IMAGE) {
+      cmark_iter_reset(iter, node, CMARK_EVENT_EXIT);
+    } else if (node->type == CMARK_NODE_HTML_INLINE && node->len > 2) {
+      bufsize_t start = node->data[1] == '/' ? 2 : 1, end = start;
+      while (end < node->len &&
+             (ascii_alnum(node->data[end]) || node->data[end] == '-'))
+        ++end;
+      if (ascii_equal(node->data + start, end - start, "a") ||
+          ascii_equal(node->data + start, end - start, "code") ||
+          ascii_equal(node->data + start, end - start, "pre") ||
+          ascii_equal(node->data + start, end - start, "script") ||
+          ascii_equal(node->data + start, end - start, "style")) {
+        if (start == 2) {
+          if (html_depth)
+            --html_depth;
+        } else if (node->data[node->len - 2] != '/')
+          ++html_depth;
+      }
+    } else if (!html_depth && node->type == CMARK_NODE_TEXT &&
+               !(node->flags & CMARK_NODE__LITERAL_ESCAPE)) {
+      cmark_node *last = node;
+      while (last->next && last->next->type == CMARK_NODE_TEXT &&
+             !(last->next->flags & CMARK_NODE__LITERAL_ESCAPE))
+        last = last->next;
+      cmark_node *after = last->next;
+      cmark_iter_reset(iter, last, CMARK_EVENT_EXIT);
+      linkify_run(node, after);
+    }
+  }
+  cmark_iter_free(iter);
 }
 
 // Parse inlines from parent's string_content, adding as children of parent.
@@ -1849,6 +2776,21 @@ void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
   subject_from_buf(mem, content_line, parent->start_column - 1 + internal_offset,
                    &subj, &content, refmap, footnote_map);
   cmark_chunk_rtrim(&subj.input);
+  subj.unescape_table_pipes = parent->type == CMARK_NODE_TABLE_CELL &&
+                              (options & CMARK_OPT_VIEWER_COMPAT);
+
+  if (!(options & CMARK_OPT_NO_EXTENSIONS) && (options & CMARK_OPT_TASKLISTS) &&
+      parent->type == CMARK_NODE_PARAGRAPH && parent->parent &&
+      parent->parent->type == CMARK_NODE_ITEM && parent->prev == NULL &&
+      subj.input.len >= 4 && subj.input.data[0] == '[' &&
+      (subj.input.data[1] == ' ' || subj.input.data[1] == 'x' ||
+       subj.input.data[1] == 'X') &&
+      subj.input.data[2] == ']' && cmark_isspace(subj.input.data[3])) {
+    parent->parent->as.list.task = subj.input.data[1] == ' ' ? 1 : 2;
+    subj.pos = 3;
+    if (subj.input.data[3] == ' ' || subj.input.data[3] == '\t')
+      ++subj.pos;
+  }
 
   while (!is_eof(&subj) && parse_inline(&subj, parent, options))
     ;
@@ -1861,6 +2803,8 @@ void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
   while (subj.last_bracket) {
     pop_bracket(&subj);
   }
+  if ((options & CMARK_OPT_LINKIFY) && !(options & CMARK_OPT_NO_EXTENSIONS))
+    linkify_inlines(parent);
 }
 
 // Parse zero or more space characters, including at most one newline.

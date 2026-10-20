@@ -233,6 +233,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_DOCUMENT:
     break;
 
+  case CMARK_NODE_ALERT:
   case CMARK_NODE_BLOCK_QUOTE:
     if (entering) {
       LIT("\\begin{quote}");
@@ -283,6 +284,8 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_ITEM:
     if (entering) {
       LIT("\\item ");
+      if (cmark_node_get_task_checked(node) >= 0)
+        LIT(cmark_node_get_task_checked(node) ? "[x] " : "[ ] ");
     } else {
       CR();
     }
@@ -474,12 +477,46 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     }
     break;
 
+  case CMARK_NODE_TOC:
+    LIT("\\tableofcontents");
+    BLANKLINE();
+    break;
+  case CMARK_NODE_SUBSCRIPT:
+    LIT(entering ? "\\textsubscript{" : "}");
+    break;
+  case CMARK_NODE_SUPERSCRIPT:
+    LIT(entering ? "\\textsuperscript{" : "}");
+    break;
+
+  case CMARK_NODE_FORMULA_INLINE:
+  case CMARK_NODE_FORMULA_BLOCK: {
+    const char *label = cmark_node_get_formula_label(node);
+    if (!node->as.formula.viewer && !*label)
+      break;
+    bool block = node->type == CMARK_NODE_FORMULA_BLOCK;
+    bool raw = node->as.formula.environment != NULL;
+    bool display = cmark_node_get_formula_display(node) != 0;
+    if (block)
+      BLANKLINE();
+    if (!raw)
+      LIT(display ? "\\[" : "\\(");
+    OUT(cmark_node_get_literal(node), false, LITERAL);
+    if (*label) {
+      LIT("\\quad\\mbox{(");
+      OUT(label, false, NORMAL);
+      LIT(")}");
+    }
+    if (!raw)
+      LIT(display ? "\\]" : "\\)");
+    if (block)
+      BLANKLINE();
+    break;
+  }
+
   /* Extension nodes — no output in this renderer */
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:
   case CMARK_NODE_WIKILINK:
-  case CMARK_NODE_FORMULA_INLINE:
-  case CMARK_NODE_FORMULA_BLOCK:
   case CMARK_NODE_TABLE:
   case CMARK_NODE_TABLE_ROW:
   case CMARK_NODE_TABLE_CELL:

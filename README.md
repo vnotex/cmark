@@ -29,6 +29,27 @@ punctuation. Add `--unsafe` (or `CMARK_OPT_UNSAFE`) when raw HTML output is
 required. The upstream conformance, roundtrip, and pathological tests use
 `--no-extensions`; fork feature tests continue to use the default mode.
 
+The opt-in `CMARK_OPT_VIEWER` library profile adds subscript/superscript, task
+metadata, alert containers, TOC directives, raw math environments, equation tags,
+optional-edge tables and percentage image dimensions. It retains the fork's
+existing extensions, including wikilinks. Add `CMARK_OPT_LINKIFY` for bare URL and
+email links, or `CMARK_OPT_HTML_AS_TEXT` to parse HTML spelling as text. Emoji
+shortcodes are not expanded. Generic defaults and CLI behavior are unchanged;
+`CMARK_OPT_NO_EXTENSIONS` also suppresses the opt-in syntax extensions.
+
+Single-line `$$...$$` remains an inline AST node with its display flag set, even
+when the HTML presentation is a block. Multiline formulas remain block nodes.
+Viewer formula literals preserve escapes; all renderers retain equation labels.
+
+`cmark_render_html_with_options()` supplies a read-only, per-call viewer output
+profile: source-line markers, code languages, task controls, figures, frontmatter,
+footnotes and TOC/permalink markup. Heading IDs are borrowed UTF-8 strings in
+source order; callers assign duplicate IDs in final render order before supplying
+the table. The application owns slug policy. Raw HTML permission and file/SVG
+URL allowances are independent; viewer links and wikilinks share URL validation.
+This output is not an HTML sanitizer: callers must retain their DOM/resource
+security policy. `cmark_render_html()` keeps its existing generic behavior.
+
 Advantages of this library:
 
 - **Portable.**  The library and program are written in standard

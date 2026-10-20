@@ -20,6 +20,7 @@ typedef struct {
   unsigned char delimiter;
   unsigned char bullet_char;
   bool tight;
+  unsigned char task; /* 0: ordinary item, 1: unchecked, 2: checked */
 } cmark_list;
 
 typedef struct {
@@ -33,7 +34,19 @@ typedef struct {
 typedef struct {
   uint8_t fence_length;
   uint8_t fence_offset;
+  unsigned char *label;
+  unsigned char *environment; /* raw TeX block, NULL for dollar fences */
+  bool viewer;
+  bool closed;
+  bool require_closer;
+  bool invalid_environment;
+  bool raw_end_pending;
+  bool invalid_closer;
 } cmark_formula;
+
+typedef struct {
+  bufsize_t fence_length;
+} cmark_alert;
 
 typedef struct {
   int internal_offset;
@@ -73,6 +86,8 @@ typedef struct {
   unsigned char *title;
   int width;
   int height;
+  unsigned char *width_text;
+  unsigned char *height_text;
   /* Source position of the raw destination as spelled in the input, for inline
    * links, images and autolinks with a non-empty destination only. Autolink
    * spans exclude their angle brackets. Zero for reference-style links and
@@ -105,6 +120,8 @@ enum cmark_node__internal_flags {
   CMARK_NODE__LAST_LINE_BLANK = (1 << 1),
   CMARK_NODE__LAST_LINE_CHECKED = (1 << 2),
   CMARK_NODE__LIST_LAST_LINE_BLANK = (1 << 3),
+  CMARK_NODE__LITERAL_ESCAPE = (1 << 4),
+  CMARK_NODE__UNCLOSED_FORMULA = (1 << 5),
 };
 
 struct cmark_node {
@@ -138,6 +155,7 @@ struct cmark_node {
     cmark_link link;
     cmark_custom custom;
     cmark_formula formula;
+    cmark_alert alert;
     cmark_table table;
     cmark_table_row table_row;
     cmark_table_cell table_cell;

@@ -23,6 +23,10 @@ struct cmark_footnote_map {
   cmark_footnote **sorted;     // lazily built sorted array for bsearch
   unsigned int size;           // number of entries
   int next_number;             // next number to assign (starts at 1)
+  bool collect_references;
+  struct cmark_node **pending; // viewer definitions in first-reference order
+  size_t pending_size;
+  size_t pending_capacity;
 };
 
 typedef struct cmark_footnote_map cmark_footnote_map;

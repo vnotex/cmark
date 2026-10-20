@@ -41,6 +41,10 @@ struct cmark_parser {
   void *reference_destination_user_data;
   int options;
   bool last_buffer_ended_with_cr;
+  const unsigned char
+      *unclosed_environment; /* borrowed during block backtracking */
+  bool unclosed_dollars;
+  bool has_unclosed_formulas;
   unsigned int total_size;
 };
 

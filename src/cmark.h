@@ -52,9 +52,11 @@ typedef enum {
   CMARK_NODE_TABLE_ROW,
   CMARK_NODE_TABLE_CELL,
   CMARK_NODE_FOOTNOTE_DEFINITION,
+  CMARK_NODE_ALERT,
+  CMARK_NODE_TOC,
 
   CMARK_NODE_FIRST_BLOCK = CMARK_NODE_DOCUMENT,
-  CMARK_NODE_LAST_BLOCK = CMARK_NODE_FOOTNOTE_DEFINITION,
+  CMARK_NODE_LAST_BLOCK = CMARK_NODE_TOC,
 
   /* Inline */
   CMARK_NODE_TEXT,
@@ -73,9 +75,11 @@ typedef enum {
   CMARK_NODE_WIKILINK,
   CMARK_NODE_FOOTNOTE_REFERENCE,
   CMARK_NODE_INLINE_FOOTNOTE,
+  CMARK_NODE_SUBSCRIPT,
+  CMARK_NODE_SUPERSCRIPT,
 
   CMARK_NODE_FIRST_INLINE = CMARK_NODE_TEXT,
-  CMARK_NODE_LAST_INLINE = CMARK_NODE_INLINE_FOOTNOTE
+  CMARK_NODE_LAST_INLINE = CMARK_NODE_SUPERSCRIPT
 } cmark_node_type;
 
 /* For backwards compatibility: */
@@ -217,6 +221,7 @@ CMARK_EXPORT cmark_node *cmark_node_last_child(cmark_node *node);
  * * CMARK_NODE_THEMATIC_BREAK
  * * CMARK_NODE_CODE_BLOCK
  * * CMARK_NODE_FORMULA_BLOCK
+ * * CMARK_NODE_TOC
  * * CMARK_NODE_TEXT
  * * CMARK_NODE_SOFTBREAK
  * * CMARK_NODE_LINEBREAK
@@ -313,8 +318,9 @@ CMARK_EXPORT int cmark_node_set_literal(cmark_node *node, const char *content);
 
 /** Returns 1 for a block formula or an inline formula delimited by `$$`,
  * and 0 for a single-dollar formula, a non-formula node, or NULL.
- * Inline formula source positions exclude both opening and closing delimiters,
- * regardless of display mode.
+ * Single-line display formulas retain inline source placement in every parse
+ * profile. Inline formula source positions exclude both opening and closing
+ * delimiters and any equation label, regardless of display mode.
  */
 CMARK_EXPORT int cmark_node_get_formula_display(cmark_node *node);
 
@@ -399,9 +405,9 @@ CMARK_EXPORT const char *cmark_node_get_title(cmark_node *node);
  */
 CMARK_EXPORT int cmark_node_set_title(cmark_node *node, const char *title);
 
-/** Returns the declared width/height of an image 'node' coming from the
-    `=WxH` size extension, or 0 when unspecified or when 'node' is not an
-    image.
+/** Returns the absolute-pixel width/height of an image 'node' from the
+    `=WxH` extension, or 0 when unspecified, percentage-based, or not an image.
+    The dimension-text getters preserve viewer percentage values.
  */
 CMARK_EXPORT int cmark_node_get_image_width(cmark_node *node);
 CMARK_EXPORT int cmark_node_get_image_height(cmark_node *node);
@@ -457,6 +463,11 @@ CMARK_EXPORT int cmark_node_set_on_exit(cmark_node *node, const char *on_exit);
 /** Returns the line on which 'node' begins.
  */
 CMARK_EXPORT int cmark_node_get_start_line(cmark_node *node);
+
+/** First retained content line after leading reference definitions, otherwise
+ * the source start line. Zero for a NULL node.
+ */
+CMARK_EXPORT int cmark_node_get_content_start_line(cmark_node *node);
 
 /** Returns the column at which 'node' begins.
  */
@@ -633,6 +644,32 @@ char *cmark_render_xml(cmark_node *root, int options);
 CMARK_EXPORT
 char *cmark_render_html(cmark_node *root, int options);
 
+/** Per-call, read-only HTML output profile. Heading IDs are borrowed, in
+ * source order (start line/column), and must remain valid during the call.
+ */
+typedef struct {
+  int options;
+  int viewer;
+  int render_raw_html;
+  int allow_file_links;
+  int allow_svg_data_images;
+  const char *const *heading_ids;
+  size_t heading_count;
+} cmark_html_options;
+CMARK_EXPORT char *
+cmark_render_html_with_options(cmark_node *root,
+                               const cmark_html_options *options);
+
+/** Viewer syntax metadata. Strings are borrowed; absent values are empty.
+ * Task state is -1 for a non-task, 0 for unchecked, 1 for checked.
+ */
+CMARK_EXPORT int cmark_node_get_task_checked(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_alert_type(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_toc_options(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_formula_label(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_image_width_text(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_image_height_text(cmark_node *node);
+
 /** Render a 'node' tree as a groff man page, without the header.
  * It is the caller's responsibility to free the returned buffer.
  */
@@ -708,11 +745,29 @@ char *cmark_render_latex(cmark_node *root, int options, int width);
 
 /** Disable this fork's syntax extensions when parsing: tables, inline and
  * block math, frontmatter, wikilinks, footnotes (including inline footnotes),
- * strikethrough, mark, and image dimensions. Parse their input as CommonMark
- * instead. Extensions remain enabled with CMARK_OPT_DEFAULT. This option
- * does not change rendering or disable other explicitly selected options.
+ * strikethrough, mark, image dimensions, and all opt-in viewer extensions.
+ * Parse their input as CommonMark instead. Existing extensions remain enabled
+ * with CMARK_OPT_DEFAULT. HTML_AS_TEXT remains effective (it is core policy).
  */
 #define CMARK_OPT_NO_EXTENSIONS (1 << 11)
+
+/** Disable raw HTML recognition without disabling angle-bracket autolinks. */
+#define CMARK_OPT_HTML_AS_TEXT (1 << 12)
+/** Linkify eligible inline text after Markdown inline parsing. */
+#define CMARK_OPT_LINKIFY (1 << 13)
+#define CMARK_OPT_SUBSCRIPT (1 << 14)
+#define CMARK_OPT_SUPERSCRIPT (1 << 15)
+#define CMARK_OPT_TASKLISTS (1 << 16)
+#define CMARK_OPT_ALERTS (1 << 18)
+#define CMARK_OPT_TOC (1 << 19)
+#define CMARK_OPT_MATH_RAW (1 << 20)
+/** Shared viewer grammar: optional table edges, image percentages, math tags.
+ */
+#define CMARK_OPT_VIEWER_COMPAT (1 << 21)
+#define CMARK_OPT_VIEWER                                                       \
+  (CMARK_OPT_SUBSCRIPT | CMARK_OPT_SUPERSCRIPT | CMARK_OPT_TASKLISTS |         \
+   CMARK_OPT_ALERTS | CMARK_OPT_TOC | CMARK_OPT_MATH_RAW |                     \
+   CMARK_OPT_VIEWER_COMPAT)
 
 /**
  * ## Version information
@@ -776,6 +831,10 @@ const char *cmark_version_string(void);
 #define NODE_FOOTNOTE_DEFINITION CMARK_NODE_FOOTNOTE_DEFINITION
 #define NODE_FOOTNOTE_REFERENCE CMARK_NODE_FOOTNOTE_REFERENCE
 #define NODE_INLINE_FOOTNOTE CMARK_NODE_INLINE_FOOTNOTE
+#define NODE_ALERT CMARK_NODE_ALERT
+#define NODE_TOC CMARK_NODE_TOC
+#define NODE_SUBSCRIPT CMARK_NODE_SUBSCRIPT
+#define NODE_SUPERSCRIPT CMARK_NODE_SUPERSCRIPT
 #define BULLET_LIST CMARK_BULLET_LIST
 #define ORDERED_LIST CMARK_ORDERED_LIST
 #define PERIOD_DELIM CMARK_PERIOD_DELIM

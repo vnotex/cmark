@@ -173,13 +173,15 @@ static bool is_blank(cmark_strbuf *s, bufsize_t offset) {
 
 static inline bool can_contain(cmark_node_type parent_type,
                                cmark_node_type child_type) {
-  return (parent_type == CMARK_NODE_DOCUMENT ||
-          parent_type == CMARK_NODE_BLOCK_QUOTE ||
-          parent_type == CMARK_NODE_ITEM ||
-          parent_type == CMARK_NODE_FOOTNOTE_DEFINITION ||
-          (parent_type == CMARK_NODE_LIST && child_type == CMARK_NODE_ITEM) ||
-          (parent_type == CMARK_NODE_TABLE && child_type == CMARK_NODE_TABLE_ROW) ||
-          (parent_type == CMARK_NODE_TABLE_ROW && child_type == CMARK_NODE_TABLE_CELL));
+  return (
+      parent_type == CMARK_NODE_DOCUMENT ||
+      parent_type == CMARK_NODE_BLOCK_QUOTE ||
+      parent_type == CMARK_NODE_ALERT || parent_type == CMARK_NODE_ITEM ||
+      parent_type == CMARK_NODE_FOOTNOTE_DEFINITION ||
+      (parent_type == CMARK_NODE_LIST && child_type == CMARK_NODE_ITEM) ||
+      (parent_type == CMARK_NODE_TABLE && child_type == CMARK_NODE_TABLE_ROW) ||
+      (parent_type == CMARK_NODE_TABLE_ROW &&
+       child_type == CMARK_NODE_TABLE_CELL));
 }
 
 static inline bool accepts_lines(cmark_node_type block_type) {
@@ -383,6 +385,18 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
     break;
 
   case CMARK_NODE_FORMULA_BLOCK:
+    if (b->as.formula.viewer && b->as.formula.require_closer &&
+        !b->as.formula.closed) {
+      if (!b->as.formula.environment) {
+        cmark_strbuf_grow(node_content, node_content->size + 2);
+        memmove(node_content->ptr + 2, node_content->ptr,
+                node_content->size + 1);
+        node_content->ptr[0] = node_content->ptr[1] = '$';
+        node_content->size += 2;
+      }
+      b->flags |= CMARK_NODE__UNCLOSED_FORMULA;
+      parser->has_unclosed_formulas = true;
+    }
     b->len = node_content->size;
     b->data = cmark_strbuf_detach(node_content);
     break;
@@ -464,11 +478,94 @@ static cmark_node *add_child(cmark_parser *parser, cmark_node *parent,
   return child;
 }
 
+typedef struct {
+  cmark_parser *parser;
+  int line_offset;
+} formula_reference_context;
+
+static void formula_reference_destination(void *user_data, int line,
+                                          const char *text, int length,
+                                          int start, int end) {
+  formula_reference_context *context = (formula_reference_context *)user_data;
+  context->parser->reference_destination_callback(
+      context->parser->reference_destination_user_data,
+      line + context->line_offset, text, length, start, end);
+}
+
+// A speculative viewer math opener without its matching closer is ordinary
+// Markdown. Re-run only that failed block through the block parser, sharing
+// the document's reference maps and deferring all inline work until afterward.
+static void recover_unclosed_formulas(cmark_parser *parser) {
+  cmark_node *node = parser->root->first_child;
+  while (node) {
+    if (node->flags & CMARK_NODE__UNCLOSED_FORMULA) {
+      cmark_parser *retry =
+          cmark_parser_new_with_mem(parser->options, parser->mem);
+      cmark_reference_map_free(retry->refmap);
+      cmark_footnote_map_free(retry->footnote_map);
+      retry->refmap = parser->refmap;
+      retry->footnote_map = parser->footnote_map;
+      retry->unclosed_environment = node->as.formula.environment;
+      retry->unclosed_dollars = node->as.formula.environment == NULL;
+      formula_reference_context context = {parser, node->start_line - 1};
+      if (parser->reference_destination_callback) {
+        retry->reference_destination_callback = formula_reference_destination;
+        retry->reference_destination_user_data = &context;
+      }
+      S_parser_feed(retry, node->data, node->len, true);
+      if (retry->linebuf.size)
+        S_process_line(retry, retry->linebuf.ptr, retry->linebuf.size);
+      while (retry->current != retry->root)
+        retry->current = finalize(retry, retry->current);
+      finalize(retry, retry->root);
+      cmark_iter *iter = cmark_iter_new(retry->root);
+      cmark_event_type event;
+      while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+        cmark_node *child = cmark_iter_get_node(iter);
+        if (event != CMARK_EVENT_ENTER || child == retry->root)
+          continue;
+        child->start_line += node->start_line - 1;
+        child->end_line += node->start_line - 1;
+        if (child->content_start_line)
+          child->content_start_line += node->start_line - 1;
+        if (child->start_column)
+          child->start_column += node->start_column - 1;
+        if (child->end_column)
+          child->end_column += node->start_column - 1;
+      }
+      cmark_iter_free(iter);
+      cmark_node *first = retry->root->first_child;
+      while (retry->root->first_child) {
+        cmark_node *child = retry->root->first_child;
+        cmark_node_unlink(child);
+        cmark_node_insert_before(node, child);
+      }
+      cmark_node *next = first ? first : node->next;
+      cmark_node_free(retry->root);
+      retry->refmap = NULL;
+      retry->footnote_map = NULL;
+      cmark_strbuf_free(&retry->content);
+      cmark_parser_free(retry);
+      cmark_node_free(node);
+      node = next;
+      continue;
+    }
+    if (node->first_child) {
+      node = node->first_child;
+      continue;
+    }
+    while (node && node != parser->root && !node->next)
+      node = node->parent;
+    node = node && node != parser->root ? node->next : NULL;
+  }
+}
+
 // Walk through node and all children, recursively, parsing
 // string content into inline content where appropriate.
-static void process_inlines(cmark_mem *mem, cmark_node *root,
-                            cmark_reference_map *refmap,
-                            cmark_footnote_map *footnote_map, int options) {
+static void process_inline_subtree(cmark_mem *mem, cmark_node *root,
+                                   cmark_reference_map *refmap,
+                                   cmark_footnote_map *footnote_map,
+                                   int options, bool skip_definitions) {
   cmark_iter *iter = cmark_iter_new(root);
   cmark_node *cur;
   cmark_event_type ev_type;
@@ -476,6 +573,11 @@ static void process_inlines(cmark_mem *mem, cmark_node *root,
   while ((ev_type = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
     cur = cmark_iter_get_node(iter);
     if (ev_type == CMARK_EVENT_ENTER) {
+      if (skip_definitions && cur != root &&
+          S_type(cur) == CMARK_NODE_FOOTNOTE_DEFINITION) {
+        cmark_iter_reset(iter, cur, CMARK_EVENT_EXIT);
+        continue;
+      }
       if (contains_inlines(S_type(cur))) {
         // For table delimiter cell, do not parse inlines.
         if (S_type(cur) == CMARK_NODE_TABLE_CELL && cur->as.table_cell.is_delimiter) {
@@ -489,6 +591,34 @@ static void process_inlines(cmark_mem *mem, cmark_node *root,
     }
   }
 
+  cmark_iter_free(iter);
+}
+
+static void process_inlines(cmark_mem *mem, cmark_node *root,
+                            cmark_reference_map *refmap,
+                            cmark_footnote_map *footnote_map, int options) {
+  if (!(options & CMARK_OPT_VIEWER_COMPAT) ||
+      (options & CMARK_OPT_NO_EXTENSIONS) || footnote_map->size == 0) {
+    process_inline_subtree(mem, root, refmap, footnote_map, options, false);
+    return;
+  }
+  footnote_map->collect_references = true;
+  process_inline_subtree(mem, root, refmap, footnote_map, options, true);
+  for (size_t i = 0; i < footnote_map->pending_size; ++i)
+    process_inline_subtree(mem, footnote_map->pending[i], refmap, footnote_map,
+                           options, true);
+  footnote_map->collect_references = false;
+  // Unused definitions still retain editor projections, but cannot allocate
+  // visible footnote numbers or create unreachable backlink targets.
+  cmark_iter *iter = cmark_iter_new(root);
+  cmark_event_type event;
+  while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    cmark_node *node = cmark_iter_get_node(iter);
+    if (event == CMARK_EVENT_ENTER &&
+        node->type == CMARK_NODE_FOOTNOTE_DEFINITION &&
+        node->as.footnote_def.number == 0)
+      process_inline_subtree(mem, node, refmap, NULL, options, true);
+  }
   cmark_iter_free(iter);
 }
 
@@ -603,6 +733,8 @@ static cmark_node *finalize_document(cmark_parser *parser) {
   else
     parser->refmap->max_ref_size = 100000;
 
+  if (parser->has_unclosed_formulas)
+    recover_unclosed_formulas(parser);
   process_inlines(parser->mem, parser->root, parser->refmap, parser->footnote_map, parser->options);
 
   cmark_strbuf_free(&parser->content);
@@ -682,7 +814,16 @@ static void S_parser_feed(cmark_parser *parser, const unsigned char *buffer,
       process = true;
     }
 
-    chunk_len = (eol - buffer);
+    size_t run_length = (size_t)(eol - buffer);
+    // Feed accepts size_t lengths, but line buffers use signed 32-bit sizes.
+    // Enforce the existing strbuf ceiling before narrowing or adding a chunk
+    // to an unfinished line; neither conversion nor addition may wrap first.
+    if (run_length > (size_t)(INT32_MAX / 2) - (size_t)parser->linebuf.size) {
+      fprintf(stderr,
+              "[cmark] input line exceeds buffer size limit, aborting\n");
+      abort();
+    }
+    chunk_len = (bufsize_t)run_length;
     if (process) {
       if (parser->linebuf.size > 0) {
         cmark_strbuf_put(&parser->linebuf, buffer, chunk_len);
@@ -942,13 +1083,15 @@ static bool parse_footnote_def_prefix(cmark_parser *parser, cmark_chunk *input,
                      false);
     return true;
   }
-  if (parser->indent >=
-      container->as.footnote_def.marker_offset +
-          container->as.footnote_def.padding) {
-    S_advance_offset(parser, input,
-                     container->as.footnote_def.marker_offset +
-                         container->as.footnote_def.padding,
-                     true);
+  // Viewer footnotes continue at four columns, independently of label width or
+  // optional indentation before the definition marker. Generic callers retain
+  // the fork's marker-relative continuation policy.
+  const int padding = (parser->options & CMARK_OPT_VIEWER_COMPAT)
+                          ? CODE_INDENT
+                          : container->as.footnote_def.marker_offset +
+                                container->as.footnote_def.padding;
+  if (parser->indent >= padding) {
+    S_advance_offset(parser, input, padding, true);
     return true;
   }
   return false;
@@ -1013,8 +1156,51 @@ typedef struct {
 // Returns columns count on matched. Otherwise, returns 0.
 static int scan_table_row_helper(const unsigned char *data, bufsize_t len,
                                  table_row_scan_context *context,
-                                 bool (*on_char)(table_row_scan_context *, bufsize_t, int, char)) {
+                                 bool (*on_char)(table_row_scan_context *,
+                                                 bufsize_t, int, char),
+                                 bool relaxed) {
   bufsize_t offset = 0;
+  if (relaxed) {
+    while (len > 0 && cmark_isspace(data[len - 1]))
+      --len;
+    if (!len)
+      return 0;
+    if (data[0] == '|')
+      ++offset;
+    if (context)
+      context->cell_start_offset = offset;
+    int cols = 0;
+    bool escaped = false;
+    for (; offset < len; ++offset) {
+      unsigned char c = data[offset];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c == '\\') {
+        if (on_char && !on_char(context, offset, cols, c))
+          return 0;
+        escaped = true;
+        continue;
+      }
+      if (on_char && !on_char(context, offset, cols, c))
+        return 0;
+      if (c == '|')
+        ++cols;
+    }
+    // A final edge is optional; do not create an extra cell for a real edge.
+    bufsize_t slashes = 0, back = len - 1;
+    while (back > 0 && data[back - 1] == '\\') {
+      ++slashes;
+      --back;
+    }
+    if (data[len - 1] != '|' || slashes % 2) {
+      if (on_char && !on_char(context, len, cols, '|'))
+        return 0;
+      ++cols;
+    }
+    return cols;
+  }
 
   // Unlike GFM, the first and trailing '|' is necessary.
   if (offset >= len || data[offset] != '|') {
@@ -1069,12 +1255,18 @@ static int scan_table_row_helper(const unsigned char *data, bufsize_t len,
   }
 }
 
-static int scan_table_header(const unsigned char *data, bufsize_t len) {
-  return scan_table_row_helper(data, len, NULL, NULL);
+static int scan_table_header(const unsigned char *data, bufsize_t len,
+                             int options) {
+  if ((options & CMARK_OPT_VIEWER_COMPAT) && !memchr(data, '|', len))
+    return 0;
+  return scan_table_row_helper(data, len, NULL, NULL,
+                               (options & CMARK_OPT_VIEWER_COMPAT) != 0);
 }
 
-static int scan_table_row(const unsigned char *data, bufsize_t len) {
-  return scan_table_row_helper(data, len, NULL, NULL);
+static int scan_table_row(const unsigned char *data, bufsize_t len,
+                          int options) {
+  return scan_table_row_helper(data, len, NULL, NULL,
+                               (options & CMARK_OPT_VIEWER_COMPAT) != 0);
 }
 
 static bool scan_table_delimiter_row_scan_row_helper(table_row_scan_context *context,
@@ -1125,11 +1317,13 @@ static bool scan_table_delimiter_row_scan_row_helper(table_row_scan_context *con
 }
 
 // Returns columns count on matched. Otherwise, returns 0.
-static int scan_table_delimiter_row(const unsigned char *data, bufsize_t len) {
+static int scan_table_delimiter_row(const unsigned char *data, bufsize_t len,
+                                    int options) {
   table_row_scan_context context;
   memset(&context, 0, sizeof(context));
   int ret = scan_table_row_helper(data, len, &context,
-                                  scan_table_delimiter_row_scan_row_helper);
+                                  scan_table_delimiter_row_scan_row_helper,
+                                  (options & CMARK_OPT_VIEWER_COMPAT) != 0);
   if (ret > 0) {
     return ret;
   } else {
@@ -1157,10 +1351,95 @@ static bool parse_frontmatter_prefix(cmark_parser *parser, cmark_chunk *input,
   return res;
 }
 
+static bool scan_toc_directive(cmark_chunk *input, bufsize_t start,
+                               bufsize_t *json, bufsize_t *json_end) {
+  const unsigned char *data = input->data;
+  bufsize_t end = input->len;
+  while (end > start && cmark_isspace(data[end - 1]))
+    --end;
+  bufsize_t token_end = start;
+  while (token_end < end && data[token_end] != ' ')
+    ++token_end;
+  bufsize_t a = start, b = token_end;
+  bool wrapped = false;
+  *json = *json_end = 0;
+  if (b - a >= 8 && data[a] == '$' && data[a + 1] == '<' &&
+      data[b - 1] == '>' && data[a + 5] == '{' && data[b - 2] == '}') {
+    *json = a + 5;
+    *json_end = b - 1;
+    // The configured placeholder excludes internal closing braces.
+    for (bufsize_t i = *json + 1; i < *json_end - 1; ++i)
+      if (data[i] == '}')
+        return false;
+    b = a + 5;
+    a += 2;
+    wrapped = true;
+  } else if (b - a == 6 && data[a] == '$' && data[a + 1] == '{' &&
+             data[b - 1] == '}') {
+    a += 2;
+    --b;
+    wrapped = true;
+  } else if (b > a && data[a] == '[' && data[b - 1] == ']') {
+    ++a;
+    --b;
+    if (a < b && data[a] == '[')
+      ++a;
+    if (a < b && data[b - 1] == ']')
+      --b;
+    if (a < b && data[a] == '_')
+      ++a;
+    if (a < b && data[b - 1] == '_')
+      --b;
+    wrapped = true;
+  }
+  return wrapped && b - a == 3 && (data[a] == 't' || data[a] == 'T') &&
+         (data[a + 1] == 'o' || data[a + 1] == 'O') &&
+         (data[a + 2] == 'c' || data[a + 2] == 'C');
+}
+
+static bufsize_t scan_alert_fence(cmark_chunk *input, bufsize_t pos) {
+  bufsize_t start = pos;
+  while (pos < input->len && input->data[pos] == ':')
+    ++pos;
+  return pos - start >= 3 ? pos - start : 0;
+}
+
+static bool alert_close(cmark_parser *parser, cmark_chunk *input,
+                        cmark_node *container) {
+  if (parser->indent >= CODE_INDENT)
+    return false;
+  bufsize_t count = scan_alert_fence(input, parser->first_nonspace);
+  if (count < container->as.alert.fence_length ||
+      !is_blank(&parser->curline, parser->first_nonspace + count))
+    return false;
+  // The nearest eligible alert owns a closer. Fenced literal blocks protect it.
+  for (cmark_node *child = parser->current; child != container;
+       child = child->parent) {
+    if (!child)
+      return false;
+    if (child->type == CMARK_NODE_CODE_BLOCK ||
+        child->type == CMARK_NODE_HTML_BLOCK ||
+        child->type == CMARK_NODE_FORMULA_BLOCK ||
+        child->type == CMARK_NODE_FRONTMATTER ||
+        (child->type == CMARK_NODE_ALERT &&
+         child->as.alert.fence_length <= count))
+      return false;
+  }
+  while (parser->current != container)
+    parser->current = finalize(parser, parser->current);
+  parser->current = finalize(parser, container);
+  container->end_line = parser->line_number;
+  container->end_column = parser->first_nonspace + count;
+  return true;
+}
+
 static bool parse_formula_block_prefix(cmark_parser *parser, cmark_chunk *input,
                                        cmark_node *container, bool *should_continue) {
   bool res = false;
   bufsize_t matched = 0;
+
+  if (container->as.formula.viewer)
+    return true;
 
   if (parser->indent <= 3) {
     matched = scan_formula_block_end(input, parser->first_nonspace);
@@ -1234,6 +1513,12 @@ static cmark_node *check_open_blocks(cmark_parser *parser, cmark_chunk *input,
     S_find_first_nonspace(parser, input);
 
     switch (cont_type) {
+    case CMARK_NODE_ALERT:
+      if (alert_close(parser, input, container))
+        return NULL;
+      break;
+    case CMARK_NODE_TOC:
+      goto done;
     case CMARK_NODE_BLOCK_QUOTE:
       if (!parse_block_quote_prefix(parser, input))
         goto done;
@@ -1297,7 +1582,41 @@ static cmark_node *check_open_blocks(cmark_parser *parser, cmark_chunk *input,
         goto done;
       break;
     case CMARK_NODE_TABLE:
-      if (!scan_table_row(input->data + parser->first_nonspace, input->len - parser->first_nonspace))
+      if ((parser->options & CMARK_OPT_VIEWER_COMPAT) &&
+          parser->indent < CODE_INDENT) {
+        unsigned char first = input->data[parser->first_nonspace];
+        bufsize_t json, json_end;
+        if ((parser->options & CMARK_OPT_TOC) &&
+            scan_toc_directive(input, parser->first_nonspace, &json, &json_end))
+          goto done;
+        if (first == '>' ||
+            scan_atx_heading_start(input, parser->first_nonspace) ||
+            scan_open_code_fence(input, parser->first_nonspace) ||
+            S_scan_thematic_break(parser, input, parser->first_nonspace) ||
+            (!(parser->options & CMARK_OPT_HTML_AS_TEXT) &&
+             scan_html_block_start(input, parser->first_nonspace)))
+          goto done;
+        if ((first == '-' || first == '+' || first == '*') &&
+            S_is_space_or_tab(input->data[parser->first_nonspace + 1]))
+          goto done;
+        if (cmark_isdigit(first)) {
+          bufsize_t pos = parser->first_nonspace;
+          while (pos < input->len && cmark_isdigit(input->data[pos]))
+            ++pos;
+          if (pos + 1 < input->len &&
+              (input->data[pos] == '.' || input->data[pos] == ')') &&
+              S_is_space_or_tab(input->data[pos + 1]))
+            goto done;
+        }
+        if ((parser->options & CMARK_OPT_ALERTS) && first == ':' &&
+            scan_alert_fence(input, parser->first_nonspace))
+          goto done;
+        if (first == '[' && parser->first_nonspace + 1 < input->len &&
+            input->data[parser->first_nonspace + 1] == '^')
+          goto done;
+      }
+      if (!scan_table_row(input->data + parser->first_nonspace,
+                          input->len - parser->first_nonspace, parser->options))
         goto done;
       break;
     case CMARK_NODE_TABLE_ROW:
@@ -1328,6 +1647,10 @@ static bool parse_table_row_cells_scan_row_helper(table_row_scan_context *contex
                                             bufsize_t offset, int cols, char c) {
   UNUSED(offset);
   if (c == '|') {
+    if ((context->parser->options & CMARK_OPT_VIEWER_COMPAT) &&
+        context->container->as.table_row.type == CMARK_TABLE_ROW_TYPE_DATA &&
+        cols >= context->container->parent->as.table.columns_cnt)
+      return true;
     cmark_node *cell_node = add_child(context->parser, context->container,
                                       CMARK_NODE_TABLE_CELL,
                                       context->container->start_column + context->cell_start_offset);
@@ -1335,11 +1658,23 @@ static bool parse_table_row_cells_scan_row_helper(table_row_scan_context *contex
     // Do not include the pipes.
     cell_node->end_column = context->container->start_column + offset - 1;
 
-    const unsigned char *cell_content = context->data + context->cell_start_offset;
-    unsigned char *mutable_data = (unsigned char *)context->data;
-    mutable_data[offset] = '\0';
-    cmark_node_set_literal(cell_node, (char *)cell_content);
-    mutable_data[offset] = '|';
+    bufsize_t content_start = context->cell_start_offset, content_end = offset;
+    if (context->parser->options & CMARK_OPT_VIEWER_COMPAT) {
+      while (content_start < content_end &&
+             S_is_space_or_tab(context->data[content_start]))
+        ++content_start;
+      while (content_end > content_start &&
+             S_is_space_or_tab(context->data[content_end - 1]))
+        --content_end;
+      cell_node->start_column += content_start - context->cell_start_offset;
+      cell_node->end_column =
+          cell_node->start_column + content_end - content_start - 1;
+    }
+    const unsigned char *cell_content = context->data + content_start;
+    cell_node->len = content_end - content_start;
+    cell_node->data =
+        (unsigned char *)context->parser->mem->calloc(cell_node->len + 1, 1);
+    memcpy(cell_node->data, cell_content, cell_node->len);
 
     cell_node->as.table_cell.idx = cols;
     cell_node->as.table_cell.is_delimiter = false;
@@ -1352,7 +1687,8 @@ static bool parse_table_row_cells_scan_row_helper(table_row_scan_context *contex
 
 static bool parse_table_row_cells(cmark_parser *parser, cmark_node *container,
                                   const unsigned char *data, bufsize_t len) {
-  if (0 >= len || data[0] != '|') {
+  if (0 >= len ||
+      (!(parser->options & CMARK_OPT_VIEWER_COMPAT) && data[0] != '|')) {
     return false;
   }
 
@@ -1361,7 +1697,9 @@ static bool parse_table_row_cells(cmark_parser *parser, cmark_node *container,
   context.parser = parser;
   context.container = container;
   context.data = data;
-  return scan_table_row_helper(data, len, &context, parse_table_row_cells_scan_row_helper);
+  return scan_table_row_helper(
+      data, len, &context, parse_table_row_cells_scan_row_helper,
+      (parser->options & CMARK_OPT_VIEWER_COMPAT) != 0);
 }
 
 static cmark_node *try_opening_new_table_row(cmark_parser *parser, cmark_node *container,
@@ -1373,7 +1711,7 @@ static cmark_node *try_opening_new_table_row(cmark_parser *parser, cmark_node *c
   const unsigned char *data = input->data + parser->first_nonspace;
   const bufsize_t len = input->len - parser->first_nonspace;
 
-  int matched = scan_table_row(data, len);
+  int matched = scan_table_row(data, len, parser->options);
   if (matched == 0) {
     return NULL;
   }
@@ -1386,6 +1724,15 @@ static cmark_node *try_opening_new_table_row(cmark_parser *parser, cmark_node *c
     return NULL;
   }
 
+  if (parser->options & CMARK_OPT_VIEWER_COMPAT) {
+    int count = row->last_child ? row->last_child->as.table_cell.idx + 1 : 0;
+    while (count < container->as.table.columns_cnt) {
+      cmark_node *cell = add_child(parser, row, CMARK_NODE_TABLE_CELL, 0);
+      cell->as.table_cell.idx = count++;
+      cell->start_column = cell->end_column = 0;
+      cell->start_line = cell->end_line = row->start_line;
+    }
+  }
   // Minus the extra '\n'.
   S_advance_offset(parser, input, input->len - parser->offset - 1, false);
   return row;
@@ -1430,7 +1777,7 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
 
   // Check if current line is the delimiter row. If yes, change the type of the parent container
   // from PARAGRAPH to TABLE.
-  int del_matched = scan_table_delimiter_row(data, len);
+  int del_matched = scan_table_delimiter_row(data, len, parser->options);
   if (del_matched == 0) {
     return NULL;
   }
@@ -1445,7 +1792,7 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
   }
   const unsigned char *header = parser->content.ptr + header_offset;
   const bufsize_t header_len = parser->content.size - header_offset;
-  int header_matched = scan_table_header(header, header_len);
+  int header_matched = scan_table_header(header, header_len, parser->options);
   if (header_matched == 0) {
     return NULL;
   }
@@ -1546,6 +1893,111 @@ static bool try_opening_new_table_blocks(cmark_parser *parser, cmark_node **cont
   }
 }
 
+static bool open_viewer_formula(cmark_parser *parser, cmark_node **container,
+                                cmark_chunk *input) {
+  bufsize_t start = parser->first_nonspace, pos = start, env_start = 0,
+            env_end = 0;
+  bool raw = false;
+  if ((parser->options & CMARK_OPT_MATH_RAW) && input->len - pos >= 7 &&
+      memcmp(input->data + pos, "\\begin", 6) == 0) {
+    pos += 6;
+    while (pos < input->len && cmark_isspace(input->data[pos]))
+      ++pos;
+    if (pos == input->len) {
+      env_start = env_end =
+          pos; // The environment name may follow on the next line.
+    } else {
+      if (input->data[pos++] != '{')
+        return false;
+      env_start = pos;
+      while (pos < input->len && input->data[pos] != '}' &&
+             input->data[pos] != '{' && !cmark_isspace(input->data[pos]))
+        ++pos;
+      if (pos == env_start || pos >= input->len || input->data[pos] != '}')
+        return false;
+      env_end = pos;
+    }
+    if (parser->unclosed_environment &&
+        (bufsize_t)strlen((const char *)parser->unclosed_environment) ==
+            env_end - env_start &&
+        memcmp(parser->unclosed_environment, input->data + env_start,
+               env_end - env_start) == 0)
+      return false;
+    raw = true;
+  } else if ((parser->options & CMARK_OPT_VIEWER_COMPAT) &&
+             input->len - pos >= 2 && input->data[pos] == '$' &&
+             input->data[pos + 1] == '$') {
+    if (parser->unclosed_dollars && parser->line_number == 1)
+      return false;
+    pos += 2;
+    // Display style does not imply block source placement. A same-line
+    // closer belongs to the inline parser, including a following equation tag.
+    for (bufsize_t close = pos; close + 1 < input->len; ++close) {
+      if (S_is_line_end_char(input->data[close]))
+        break;
+      if (input->data[close] == '$' && input->data[close + 1] == '$')
+        return false;
+    }
+  } else {
+    return false;
+  }
+  *container =
+      add_child(parser, *container, CMARK_NODE_FORMULA_BLOCK, start + 1);
+  cmark_formula *formula = &(*container)->as.formula;
+  formula->viewer = true;
+  formula->fence_length = raw ? 0 : 2;
+  formula->require_closer = raw || !is_blank(&parser->curline, pos);
+  if (raw) {
+    formula->environment =
+        (unsigned char *)parser->mem->calloc(env_end - env_start + 1, 1);
+    memcpy(formula->environment, input->data + env_start, env_end - env_start);
+    pos = start; // Raw TeX includes its begin/end commands.
+  }
+  S_advance_offset(parser, input, pos - parser->offset, false);
+  return true;
+}
+
+static bool open_viewer_directive(cmark_parser *parser, cmark_node **container,
+                                  cmark_chunk *input) {
+  const unsigned char *data = input->data;
+  bufsize_t start = parser->first_nonspace, end = input->len;
+  while (end > start && cmark_isspace(data[end - 1]))
+    --end;
+  if ((parser->options & CMARK_OPT_ALERTS) && data[start] == ':') {
+    bufsize_t fence = scan_alert_fence(input, start), type = start + fence;
+    while (type < end && S_is_space_or_tab(data[type]))
+      ++type;
+    if (fence && end - type > 6 && memcmp(data + type, "alert-", 6) == 0) {
+      for (bufsize_t i = type; i < end; ++i)
+        if (cmark_isspace(data[i]))
+          return false;
+      *container = add_child(parser, *container, CMARK_NODE_ALERT, start + 1);
+      (*container)->as.alert.fence_length = fence;
+      (*container)->len = end - type;
+      (*container)->data =
+          (unsigned char *)parser->mem->calloc(end - type + 1, 1);
+      memcpy((*container)->data, data + type, end - type);
+      S_advance_offset(parser, input, input->len - 1 - parser->offset, false);
+      return true;
+    }
+  }
+  if (parser->options & CMARK_OPT_TOC) {
+    bufsize_t json, json_end;
+    if (scan_toc_directive(input, start, &json, &json_end)) {
+      *container = add_child(parser, *container, CMARK_NODE_TOC, start + 1);
+      if (json) {
+        (*container)->len = json_end - json;
+        (*container)->data =
+            (unsigned char *)parser->mem->calloc(json_end - json + 1, 1);
+        memcpy((*container)->data, data + json, json_end - json);
+      }
+      S_advance_offset(parser, input, input->len - 1 - parser->offset, false);
+      return true;
+    }
+  }
+  return false;
+}
+
 static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                             cmark_chunk *input, bool all_matched) {
   bool indented;
@@ -1563,7 +2015,7 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
   while (cont_type != CMARK_NODE_CODE_BLOCK &&
          cont_type != CMARK_NODE_FORMULA_BLOCK &&
          cont_type != CMARK_NODE_HTML_BLOCK &&
-         cont_type != CMARK_NODE_TABLE_CELL) {
+         cont_type != CMARK_NODE_TABLE_CELL && cont_type != CMARK_NODE_TOC) {
 
     S_find_first_nonspace(parser, input);
     indented = parser->indent >= CODE_INDENT;
@@ -1581,6 +2033,9 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       *container = add_child(parser, *container, CMARK_NODE_BLOCK_QUOTE,
                              blockquote_startpos + 1);
 
+    } else if (extensions && !indented && !parser->blank &&
+               open_viewer_directive(parser, container, input)) {
+      break;
     } else if (!indented && (matched = scan_atx_heading_start(
                                  input, parser->first_nonspace))) {
       bufsize_t hashpos;
@@ -1619,6 +2074,10 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                        false);
 
     } else if (extensions && !indented &&
+               open_viewer_formula(parser, container, input)) {
+      break;
+    } else if (extensions && !indented && !parser->unclosed_environment &&
+               !(parser->unclosed_dollars && parser->line_number == 1) &&
                (matched =
                     scan_formula_block_start(input, parser->first_nonspace))) {
       *container = add_child(parser, *container, CMARK_NODE_FORMULA_BLOCK,
@@ -1630,7 +2089,7 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                        parser->first_nonspace + matched - parser->offset,
                        false);
 
-    } else if (!indented &&
+    } else if (!indented && !(parser->options & CMARK_OPT_HTML_AS_TEXT) &&
                ((matched =
                      scan_html_block_start(input, parser->first_nonspace)) ||
                 (cont_type != CMARK_NODE_PARAGRAPH && !maybe_lazy &&
@@ -1641,6 +2100,11 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       (*container)->as.html_block_type = matched;
       // note, we don't adjust parser->offset because the tag is part of the
       // text
+    } else if (extensions && (parser->options & CMARK_OPT_VIEWER_COMPAT) &&
+               cont_type == CMARK_NODE_PARAGRAPH &&
+               try_opening_new_table_blocks(parser, container, input,
+                                            indented)) {
+      break;
     } else if (!indented && cont_type == CMARK_NODE_PARAGRAPH &&
                (lev =
                     scan_setext_heading_line(input, parser->first_nonspace))) {
@@ -1786,6 +2250,120 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
   }
 }
 
+static cmark_node *add_viewer_formula_line(cmark_parser *parser,
+                                           cmark_node *container,
+                                           cmark_chunk *input) {
+  cmark_formula *formula = &container->as.formula;
+  if (formula->environment && !*formula->environment &&
+      !formula->invalid_environment) {
+    bufsize_t pos = parser->offset;
+    if (input->len - pos >= 6 && memcmp(input->data + pos, "\\begin", 6) == 0)
+      pos += 6;
+    while (pos < input->len && cmark_isspace(input->data[pos]))
+      ++pos;
+    if (pos < input->len) {
+      if (input->data[pos++] != '{')
+        formula->invalid_environment = true;
+      else {
+        bufsize_t start = pos;
+        while (pos < input->len && input->data[pos] != '}' &&
+               input->data[pos] != '{' && !cmark_isspace(input->data[pos]))
+          ++pos;
+        if (pos == start || pos >= input->len || input->data[pos] != '}')
+          formula->invalid_environment = true;
+        else {
+          parser->mem->free(formula->environment);
+          formula->environment =
+              (unsigned char *)parser->mem->calloc(pos - start + 1, 1);
+          memcpy(formula->environment, input->data + start, pos - start);
+        }
+      }
+    }
+  }
+  bufsize_t close = -1, after = 0, label = 0, label_end = 0;
+  if (formula->raw_end_pending && formula->environment) {
+    bufsize_t pos = parser->offset;
+    bufsize_t env_len = (bufsize_t)strlen((const char *)formula->environment);
+    while (pos < input->len && cmark_isspace(input->data[pos]))
+      ++pos;
+    if (pos < input->len) {
+      formula->raw_end_pending = false;
+      if (pos + env_len + 2 <= input->len && input->data[pos] == '{' &&
+          memcmp(input->data + pos + 1, formula->environment, env_len) == 0 &&
+          input->data[pos + env_len + 1] == '}') {
+        close = after = pos + env_len + 2;
+      }
+    }
+  }
+  for (bufsize_t pos = parser->offset;
+       close < 0 && !formula->invalid_environment && !formula->invalid_closer &&
+       pos < input->len;
+       ++pos) {
+    if (formula->environment) {
+      if (input->len - pos < 5 || memcmp(input->data + pos, "\\end", 4))
+        continue;
+      bufsize_t end = pos + 4,
+                env_len = (bufsize_t)strlen((char *)formula->environment);
+      while (end < input->len && cmark_isspace(input->data[end]))
+        ++end;
+      if (end == input->len) {
+        formula->raw_end_pending = true;
+        continue;
+      }
+      if (end + env_len + 2 > input->len || input->data[end++] != '{' ||
+          memcmp(input->data + end, formula->environment, env_len) ||
+          input->data[end + env_len] != '}')
+        continue;
+      after = end + env_len + 1;
+      close = after;
+      break;
+    }
+    if (pos + 1 >= input->len || input->data[pos] != '$' ||
+        input->data[pos + 1] != '$')
+      continue;
+    bufsize_t end = pos + 2;
+    while (end < input->len && S_is_space_or_tab(input->data[end]))
+      ++end;
+    if (end < input->len && input->data[end] == '(') {
+      label = ++end;
+      while (end < input->len && input->data[end] != ')' &&
+             !cmark_isspace(input->data[end]))
+        ++end;
+      if (end == label || end >= input->len || input->data[end] != ')') {
+        label = 0;
+        formula->invalid_closer = true;
+        break;
+      }
+      label_end = end++;
+      while (end < input->len && S_is_space_or_tab(input->data[end]))
+        ++end;
+    }
+    if ((end < input->len && !S_is_line_end_char(input->data[end])) ||
+        (parser->content.size == 0 && pos == parser->offset)) {
+      label = 0;
+      formula->invalid_closer = true;
+      break;
+    }
+    close = pos;
+    after = end;
+    break;
+  }
+  if (close < 0) {
+    add_line(input, parser);
+    return container;
+  }
+  cmark_strbuf_put(&parser->content, input->data + parser->offset,
+                   close - parser->offset);
+  formula->closed = true;
+  if (label) {
+    formula->label =
+        (unsigned char *)parser->mem->calloc(label_end - label + 1, 1);
+    memcpy(formula->label, input->data + label, label_end - label);
+  }
+  S_advance_offset(parser, input, after - parser->offset, false);
+  return finalize(parser, container);
+}
+
 static void add_text_to_container(cmark_parser *parser, cmark_node *container,
                                   cmark_node *last_matched_container,
                                   cmark_chunk *input) {
@@ -1837,9 +2415,12 @@ static void add_text_to_container(cmark_parser *parser, cmark_node *container,
       assert(parser->current != NULL);
     }
 
-    if (S_type(container) == CMARK_NODE_CODE_BLOCK ||
-        S_type(container) == CMARK_NODE_FORMULA_BLOCK ||
-        S_type(container) == CMARK_NODE_FRONTMATTER) {
+    if (S_type(container) == CMARK_NODE_FORMULA_BLOCK &&
+        container->as.formula.viewer) {
+      container = add_viewer_formula_line(parser, container, input);
+    } else if (S_type(container) == CMARK_NODE_CODE_BLOCK ||
+               S_type(container) == CMARK_NODE_FORMULA_BLOCK ||
+               S_type(container) == CMARK_NODE_FRONTMATTER) {
       add_line(input, parser);
     } else if (S_type(container) == CMARK_NODE_HTML_BLOCK) {
       add_line(input, parser);

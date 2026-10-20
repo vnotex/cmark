@@ -145,6 +145,7 @@ void cmark_footnote_map_free(cmark_footnote_map *map) {
   }
 
   map->mem->free(map->sorted);
+  map->mem->free(map->pending);
   map->mem->free(map);
 }
 

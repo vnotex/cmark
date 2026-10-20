@@ -1,5 +1,14 @@
 [0.31.2]
 
+  * Add opt-in viewer syntax: sub/sup, tasks, alerts, TOC, linkification with
+    IDN normalization, raw math, equation tags and extended image/table syntax.
+    Preserve existing fork features and generic/--no-extensions behavior.
+
+  * Add immutable per-call HTML output options with application-provided heading
+    IDs, source markers, viewer markup and independent raw HTML/URL policy.
+    Preserve single-line display formulas as inline AST nodes and retain labels
+    across HTML, XML, CommonMark, man and LaTeX renderers.
+
   * Add CMARK_OPT_NO_EXTENSIONS and --no-extensions to parse without fork
     syntax extensions while preserving the default extension behavior.
     Run upstream CommonMark conformance, roundtrip, and pathological tests

@@ -114,9 +114,36 @@ static int S_render_node(cmark_node *node, cmark_event_type ev_type,
       cmark_strbuf_puts(xml, " display=\"true\"");
     }
 
+    if (*cmark_node_get_formula_label(node)) {
+      cmark_strbuf_puts(xml, " label=\"");
+      escape_xml_str(xml,
+                     (const unsigned char *)cmark_node_get_formula_label(node));
+      cmark_strbuf_putc(xml, '"');
+    }
     literal = false;
 
     switch (node->type) {
+    case CMARK_NODE_ITEM:
+      if (cmark_node_get_task_checked(node) >= 0)
+        cmark_strbuf_puts(xml, cmark_node_get_task_checked(node)
+                                   ? " checked=\"true\""
+                                   : " checked=\"false\"");
+      break;
+    case CMARK_NODE_ALERT:
+      cmark_strbuf_puts(xml, " type=\"");
+      escape_xml_str(xml,
+                     (const unsigned char *)cmark_node_get_alert_type(node));
+      cmark_strbuf_putc(xml, '"');
+      break;
+    case CMARK_NODE_TOC:
+      cmark_strbuf_puts(xml, " options=\"");
+      escape_xml_str(xml,
+                     (const unsigned char *)cmark_node_get_toc_options(node));
+      cmark_strbuf_putc(xml, '"');
+      break;
+    case CMARK_NODE_SUBSCRIPT:
+    case CMARK_NODE_SUPERSCRIPT:
+      break;
     case CMARK_NODE_DOCUMENT:
       cmark_strbuf_puts(xml, " xmlns=\"http://commonmark.org/xml/1.0\"");
       break;

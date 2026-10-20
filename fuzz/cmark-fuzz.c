@@ -22,7 +22,8 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     options &=
         (CMARK_OPT_SOURCEPOS | CMARK_OPT_HARDBREAKS | CMARK_OPT_UNSAFE |
          CMARK_OPT_NOBREAKS | CMARK_OPT_NORMALIZE | CMARK_OPT_VALIDATE_UTF8 |
-         CMARK_OPT_SMART | CMARK_OPT_NO_EXTENSIONS);
+         CMARK_OPT_SMART | CMARK_OPT_NO_EXTENSIONS | CMARK_OPT_VIEWER |
+         CMARK_OPT_HTML_AS_TEXT | CMARK_OPT_LINKIFY);
 
     /* Remainder of input is the markdown */
     const char *markdown = (const char *)(data + sizeof(fuzz_config));
@@ -67,6 +68,8 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (doc != NULL) {
       free(cmark_render_commonmark(doc, options, fuzz_config.width));
       free(cmark_render_html(doc, options));
+      cmark_html_options viewer = {options, 1, 1, 1, 1, NULL, 0};
+      free(cmark_render_html_with_options(doc, &viewer));
       free(cmark_render_latex(doc, options, fuzz_config.width));
       free(cmark_render_man(doc, options, fuzz_config.width));
       free(cmark_render_xml(doc, options));

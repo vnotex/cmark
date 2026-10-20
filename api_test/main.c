@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,19 +13,21 @@
 #define UTF8_REPL "\xEF\xBF\xBD"
 
 static const cmark_node_type node_types[] = {
-    CMARK_NODE_DOCUMENT,  CMARK_NODE_BLOCK_QUOTE, CMARK_NODE_LIST,
-    CMARK_NODE_ITEM,      CMARK_NODE_CODE_BLOCK,  CMARK_NODE_HTML_BLOCK,
-    CMARK_NODE_PARAGRAPH, CMARK_NODE_HEADING,     CMARK_NODE_THEMATIC_BREAK,
-    CMARK_NODE_TEXT,      CMARK_NODE_SOFTBREAK,   CMARK_NODE_LINEBREAK,
-    CMARK_NODE_CODE,      CMARK_NODE_HTML_INLINE, CMARK_NODE_EMPH,
-    CMARK_NODE_STRONG,    CMARK_NODE_LINK,        CMARK_NODE_IMAGE};
+    CMARK_NODE_DOCUMENT,   CMARK_NODE_BLOCK_QUOTE, CMARK_NODE_LIST,
+    CMARK_NODE_ITEM,       CMARK_NODE_CODE_BLOCK,  CMARK_NODE_HTML_BLOCK,
+    CMARK_NODE_PARAGRAPH,  CMARK_NODE_HEADING,     CMARK_NODE_THEMATIC_BREAK,
+    CMARK_NODE_TEXT,       CMARK_NODE_SOFTBREAK,   CMARK_NODE_LINEBREAK,
+    CMARK_NODE_CODE,       CMARK_NODE_HTML_INLINE, CMARK_NODE_EMPH,
+    CMARK_NODE_STRONG,     CMARK_NODE_LINK,        CMARK_NODE_IMAGE,
+    CMARK_NODE_ALERT,      CMARK_NODE_TOC,         CMARK_NODE_SUBSCRIPT,
+    CMARK_NODE_SUPERSCRIPT};
 static const int num_node_types = sizeof(node_types) / sizeof(*node_types);
 
 static void test_md_to_html(test_batch_runner *runner, const char *markdown,
                             const char *expected_html, const char *msg);
 
 static void test_content(test_batch_runner *runner, cmark_node_type type,
-                         int allowed_content);
+                         uint64_t allowed_content);
 
 static void test_char(test_batch_runner *runner, int valid, const char *utf8,
                       const char *msg);
@@ -472,17 +475,24 @@ void hierarchy(test_batch_runner *runner) {
                           : CMARK_NODE_LAST_INLINE;
   OK(runner, max_node_type < 64, "all node types < 64");
 
-  int list_item_flag = 1 << CMARK_NODE_ITEM;
-  int top_level_blocks =
-      (1 << CMARK_NODE_BLOCK_QUOTE) | (1 << CMARK_NODE_LIST) |
-      (1 << CMARK_NODE_CODE_BLOCK) | (1 << CMARK_NODE_HTML_BLOCK) |
-      (1 << CMARK_NODE_PARAGRAPH) | (1 << CMARK_NODE_HEADING) |
-      (1 << CMARK_NODE_THEMATIC_BREAK);
-  int all_inlines = (1 << CMARK_NODE_TEXT) | (1 << CMARK_NODE_SOFTBREAK) |
-                    (1 << CMARK_NODE_LINEBREAK) | (1 << CMARK_NODE_CODE) |
-                    (1 << CMARK_NODE_HTML_INLINE) | (1 << CMARK_NODE_EMPH) |
-                    (1 << CMARK_NODE_STRONG) | (1 << CMARK_NODE_LINK) |
-                    (1 << CMARK_NODE_IMAGE);
+  uint64_t list_item_flag = UINT64_C(1) << CMARK_NODE_ITEM;
+  uint64_t top_level_blocks = (UINT64_C(1) << CMARK_NODE_BLOCK_QUOTE) |
+                              (UINT64_C(1) << CMARK_NODE_LIST) |
+                              (UINT64_C(1) << CMARK_NODE_CODE_BLOCK) |
+                              (UINT64_C(1) << CMARK_NODE_HTML_BLOCK) |
+                              (UINT64_C(1) << CMARK_NODE_PARAGRAPH) |
+                              (UINT64_C(1) << CMARK_NODE_HEADING) |
+                              (UINT64_C(1) << CMARK_NODE_THEMATIC_BREAK) |
+                              (UINT64_C(1) << CMARK_NODE_ALERT) |
+                              (UINT64_C(1) << CMARK_NODE_TOC);
+  uint64_t all_inlines =
+      (UINT64_C(1) << CMARK_NODE_TEXT) | (UINT64_C(1) << CMARK_NODE_SOFTBREAK) |
+      (UINT64_C(1) << CMARK_NODE_LINEBREAK) | (UINT64_C(1) << CMARK_NODE_CODE) |
+      (UINT64_C(1) << CMARK_NODE_HTML_INLINE) |
+      (UINT64_C(1) << CMARK_NODE_EMPH) | (UINT64_C(1) << CMARK_NODE_STRONG) |
+      (UINT64_C(1) << CMARK_NODE_LINK) | (UINT64_C(1) << CMARK_NODE_IMAGE) |
+      (UINT64_C(1) << CMARK_NODE_SUBSCRIPT) |
+      (UINT64_C(1) << CMARK_NODE_SUPERSCRIPT);
 
   test_content(runner, CMARK_NODE_DOCUMENT, top_level_blocks);
   test_content(runner, CMARK_NODE_BLOCK_QUOTE, top_level_blocks);
@@ -502,10 +512,14 @@ void hierarchy(test_batch_runner *runner) {
   test_content(runner, CMARK_NODE_STRONG, all_inlines);
   test_content(runner, CMARK_NODE_LINK, all_inlines);
   test_content(runner, CMARK_NODE_IMAGE, all_inlines);
+  test_content(runner, CMARK_NODE_ALERT, top_level_blocks);
+  test_content(runner, CMARK_NODE_TOC, 0);
+  test_content(runner, CMARK_NODE_SUBSCRIPT, all_inlines);
+  test_content(runner, CMARK_NODE_SUPERSCRIPT, all_inlines);
 }
 
 static void test_content(test_batch_runner *runner, cmark_node_type type,
-                         int allowed_content) {
+                         uint64_t allowed_content) {
   cmark_node *node = cmark_node_new(type);
 
   for (int i = 0; i < num_node_types; ++i) {

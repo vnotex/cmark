@@ -99,6 +99,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_DOCUMENT:
     break;
 
+  case CMARK_NODE_ALERT:
   case CMARK_NODE_BLOCK_QUOTE:
     if (entering) {
       CR();
@@ -122,7 +123,9 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
       renderer->block_number_in_list_item = new_block_number;
       CR();
       LIT(".IP ");
-      if (cmark_node_get_list_type(node->parent) == CMARK_BULLET_LIST) {
+      if (cmark_node_get_task_checked(node) >= 0) {
+        LIT(cmark_node_get_task_checked(node) ? "\"[x]\" 4" : "\"[ ]\" 4");
+      } else if (cmark_node_get_list_type(node->parent) == CMARK_BULLET_LIST) {
         LIT("\\[bu] 2");
       } else {
         list_number = cmark_node_get_list_start(node->parent);
@@ -304,12 +307,41 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     break;
   }
 
+  case CMARK_NODE_TOC:
+    CR();
+    LIT("[Table of contents]");
+    CR();
+    break;
+  case CMARK_NODE_SUBSCRIPT:
+    LIT(entering ? "~(" : ")");
+    break;
+  case CMARK_NODE_SUPERSCRIPT:
+    LIT(entering ? "^(" : ")");
+    break;
+
+  case CMARK_NODE_FORMULA_INLINE:
+  case CMARK_NODE_FORMULA_BLOCK: {
+    const char *label = cmark_node_get_formula_label(node);
+    if (!node->as.formula.viewer && !*label)
+      break;
+    bool block = node->type == CMARK_NODE_FORMULA_BLOCK;
+    if (block)
+      BLANKLINE();
+    OUT(cmark_node_get_literal(node), false, NORMAL);
+    if (*label) {
+      LIT(" (");
+      OUT(label, false, NORMAL);
+      LIT(")");
+    }
+    if (block)
+      BLANKLINE();
+    break;
+  }
+
   /* Extension nodes — no output in this renderer */
   case CMARK_NODE_STRIKETHROUGH:
   case CMARK_NODE_MARK:
   case CMARK_NODE_WIKILINK:
-  case CMARK_NODE_FORMULA_INLINE:
-  case CMARK_NODE_FORMULA_BLOCK:
   case CMARK_NODE_TABLE:
   case CMARK_NODE_TABLE_ROW:
   case CMARK_NODE_TABLE_CELL:
