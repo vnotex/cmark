@@ -430,6 +430,47 @@ static int heading_ids_in_deferred_footnotes(void) {
   return ok;
 }
 
+static int optional_heading_id_tables(void) {
+  const char *source = "# First\n\n## Second\n\nUse[^note]\n\n"
+                       "[^note]: Footnote body\n";
+  const char *ids[] = {"first"};
+  cmark_html_options options = viewer_options();
+  char *without_ids;
+  char *html;
+  int ok;
+
+  options.heading_count = 2;
+  without_ids = render(source, CMARK_OPT_VIEWER, &options);
+  ok = contains(without_ids,
+                "<h1 class=\"source-line\" data-source-line=\"0\">First</h1>") &&
+       contains(without_ids,
+                "<h2 class=\"source-line\" data-source-line=\"2\">Second</h2>") &&
+       excludes(without_ids, "vx-header-anchor") &&
+       contains(without_ids, "href=\"#fn1\"") &&
+       contains(without_ids, "Footnote body");
+
+  options.heading_ids = ids;
+  options.heading_count = 0;
+  html = render(source, CMARK_OPT_VIEWER, &options);
+  ok &= strcmp(html, without_ids) == 0;
+  free(html);
+  free(without_ids);
+
+  options.heading_count = 1;
+  html = render(source, CMARK_OPT_VIEWER, &options);
+  ok &= contains(html, "<h1 id=\"first\"") &&
+        contains(html, "class=\"vx-header-anchor\" href=\"#first\"") &&
+        contains(html,
+                 "<h2 class=\"source-line\" data-source-line=\"2\">Second</h2>") &&
+        contains(html, "href=\"#fn1\"") && contains(html, "Footnote body");
+  free(html);
+
+  html = render("", CMARK_OPT_VIEWER, &options);
+  ok &= strcmp(html, "") == 0;
+  free(html);
+  return ok;
+}
+
 static int heading_attribute_escaping_and_empty_id(void) {
   const char *ids[] = {"\"<&", ""};
   cmark_html_options options = viewer_options();
@@ -615,6 +656,7 @@ int main(void) {
   CASE(footnote_identities_and_order);
   CASE(breaks_html_text_and_empty);
   CASE(heading_ids_in_deferred_footnotes);
+  CASE(optional_heading_id_tables);
   CASE(toc_matches_visible_heading_order);
   CASE(heading_attribute_escaping_and_empty_id);
   CASE(task_image_remains_an_inline_label);

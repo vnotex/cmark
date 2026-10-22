@@ -333,6 +333,8 @@ static void S_collect_metadata(struct render_state *state) {
     }
   }
   cmark_iter_free(iter);
+  if (!state->headings || !state->config->heading_ids)
+    return;
   /* Native heading projections are source-ordered, even when definitions
    * have been relocated in the tree or are emitted after the main body. */
   if (state->heading_count > 1)

@@ -1,5 +1,8 @@
 [0.31.2]
 
+  * Guard optional HTML heading-ID finalization explicitly for clang-tidy,
+    preserving footnote collection when no heading-ID table is supplied.
+
   * Add opt-in viewer syntax: sub/sup, tasks, alerts, TOC, linkification with
     IDN normalization, raw math, equation tags and extended image/table syntax.
     Preserve existing fork features and generic/--no-extensions behavior.
