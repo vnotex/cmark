@@ -1,5 +1,9 @@
 [0.31.2]
 
+  * Preserve the original ATX source-line length, including optional closing
+    hashes and trailing whitespace, for heading and ancestor source positions.
+    Inline title content and HTML output remain unchanged.
+
   * Guard optional HTML heading-ID finalization explicitly for clang-tidy,
     preserving footnote collection when no heading-ID table is supplied.
 

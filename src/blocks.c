@@ -2709,7 +2709,8 @@ static void S_process_line(cmark_parser *parser, const unsigned char *buffer,
   add_text_to_container(parser, container, last_matched_container, &input);
 
 finished:
-  parser->last_line_length = input.len;
+  // ATX title parsing trims input.len, but source extents cover the full line.
+  parser->last_line_length = parser->curline.size;
   if (parser->last_line_length &&
       input.data[parser->last_line_length - 1] == '\n')
     parser->last_line_length -= 1;
