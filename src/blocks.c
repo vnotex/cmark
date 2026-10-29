@@ -198,7 +198,7 @@ static inline bool contains_inlines(cmark_node_type block_type) {
           block_type == CMARK_NODE_TABLE_CELL);
 }
 
-static void add_line(cmark_chunk *ch, cmark_parser *parser) {
+static void add_line(cmark_chunk *ch, cmark_parser *parser, cmark_node *node) {
   int chars_to_tab;
   int i;
   parser->content_last_line_offset = parser->content.size;
@@ -214,6 +214,16 @@ static void add_line(cmark_chunk *ch, cmark_parser *parser) {
     for (i = 0; i < chars_to_tab; i++) {
       cmark_strbuf_putc(&parser->content, ' ');
     }
+  }
+  if ((parser->options & CMARK_OPT_SOURCE_SYNTAX) &&
+      (contains_inlines(S_type(node)) ||
+       (S_type(node) == CMARK_NODE_FORMULA_BLOCK && node->as.formula.viewer &&
+        node->as.formula.require_closer))) {
+    bufsize_t end = ch->len;
+    while (end > parser->offset && S_is_line_end_char(ch->data[end - 1]))
+      --end;
+    cmark_node_add_source_map(node, parser->content.size, end - parser->offset,
+                              parser->line_number, parser->offset + 1);
   }
   cmark_strbuf_put(&parser->content, ch->data + parser->offset,
                    ch->len - parser->offset);
@@ -262,7 +272,7 @@ static bool S_ends_with_blank_line(cmark_node *node) {
 
 
 // returns true if content remains after link defs are resolved.
-static bool resolve_reference_link_definitions(cmark_parser *parser) {
+static bool resolve_reference_link_definitions(cmark_parser *parser, cmark_node *node) {
   bufsize_t pos;
   bufsize_t url_start;
   bufsize_t url_end;
@@ -299,12 +309,13 @@ static bool resolve_reference_link_definitions(cmark_parser *parser) {
     chunk.data += pos;
     chunk.len -= pos;
   }
+  cmark_node_drop_source_map(node, node_content->size - chunk.len);
   cmark_strbuf_drop(node_content, (node_content->size - chunk.len));
   return !is_blank(node_content, 0);
 }
 
 static void finalize_paragraph(cmark_parser *parser, cmark_node *paragraph) {
-  if (!resolve_reference_link_definitions(parser)) {
+  if (!resolve_reference_link_definitions(parser, paragraph)) {
     // Remove blank nodes consisting only of reference definitions.
     cmark_node_free(paragraph);
   } else {
@@ -393,9 +404,23 @@ static cmark_node *finalize(cmark_parser *parser, cmark_node *b) {
                 node_content->size + 1);
         node_content->ptr[0] = node_content->ptr[1] = '$';
         node_content->size += 2;
+        for (int i = 0; i < b->source_map_count; ++i)
+          b->source_map[i].offset += 2;
+        if (b->source_map_count && b->source_map[0].offset == 2 &&
+            b->source_map[0].line == b->start_line &&
+            b->source_map[0].column == b->start_column + 2) {
+          b->source_map[0].offset = 0;
+          b->source_map[0].length += 2;
+          b->source_map[0].column -= 2;
+        }
       }
       b->flags |= CMARK_NODE__UNCLOSED_FORMULA;
       parser->has_unclosed_formulas = true;
+    }
+    if (!(b->flags & CMARK_NODE__UNCLOSED_FORMULA)) {
+      parser->mem->free(b->source_map);
+      b->source_map = NULL;
+      b->source_map_count = b->source_map_capacity = 0;
     }
     b->len = node_content->size;
     b->data = cmark_strbuf_detach(node_content);
@@ -492,6 +517,88 @@ static void formula_reference_destination(void *user_data, int line,
       line + context->line_offset, text, length, start, end);
 }
 
+// Compose a retry's normalized-input coordinates through the original formula
+// block. Each original input line contributes at most one byte-preserving map.
+static int formula_map_index(cmark_node *source, bufsize_t offset) {
+  int first = 0, last = source->source_map_count;
+  while (first < last) {
+    int mid = first + (last - first) / 2;
+    if (source->source_map[mid].offset + source->source_map[mid].length <= offset)
+      first = mid + 1;
+    else
+      last = mid;
+  }
+  return first;
+}
+
+static bool formula_source_position(cmark_node *source, const bufsize_t *lines,
+                                     int line_count, int *line, int *column,
+                                     bool end) {
+  if (*line <= 0 || *line > line_count || *column <= 0)
+    return false;
+  bufsize_t offset = lines[*line - 1] + *column - 1;
+  if (offset > lines[*line] || (end && offset == 0))
+    return false;
+  int index = formula_map_index(source, end ? offset - 1 : offset);
+  if (index >= source->source_map_count)
+    return false;
+  const cmark_source_map *entry = &source->source_map[index];
+  if (offset < entry->offset || offset > entry->offset + entry->length)
+    return false;
+  *line = entry->line;
+  *column = entry->column + offset - entry->offset;
+  return true;
+}
+
+static void remap_formula_child(cmark_node *child, cmark_node *source,
+                                 const bufsize_t *lines, int line_count) {
+  int count = 0;
+  for (int i = 0; i < child->source_map_count; ++i) {
+    cmark_source_map entry = child->source_map[i];
+    if (!lines || entry.line <= 0 || entry.line > line_count)
+      continue;
+    bufsize_t from = lines[entry.line - 1] + entry.column - 1;
+    bufsize_t to = from + entry.length;
+    int index = formula_map_index(source, from);
+    if (index >= source->source_map_count)
+      continue;
+    const cmark_source_map *original = &source->source_map[index];
+    bufsize_t mapped_from = from > original->offset ? from : original->offset;
+    bufsize_t mapped_to = to < original->offset + original->length
+                             ? to : original->offset + original->length;
+    if (mapped_from >= mapped_to)
+      continue;
+    entry.offset += mapped_from - from;
+    entry.length = mapped_to - mapped_from;
+    entry.line = original->line;
+    entry.column = original->column + mapped_from - original->offset;
+    child->source_map[count++] = entry;
+  }
+  child->source_map_count = count;
+
+  cmark_syntax *syntax = child->syntax;
+  if (!syntax)
+    return;
+  bool valid = lines &&
+      formula_source_position(source, lines, line_count, &syntax->start_line,
+                               &syntax->start_column, false) &&
+      formula_source_position(source, lines, line_count, &syntax->end_line,
+                               &syntax->end_column, true);
+  for (int i = 0; valid && i < syntax->count; ++i) {
+    cmark_syntax_span *span = &syntax->spans[i];
+    int end_line = span->line, end_column = span->column + span->length;
+    valid = formula_source_position(source, lines, line_count, &span->line,
+                                     &span->column, false) &&
+            formula_source_position(source, lines, line_count, &end_line,
+                                     &end_column, true) &&
+            span->line == end_line && end_column - span->column == span->length;
+  }
+  if (!valid) {
+    child->mem->free(child->syntax);
+    child->syntax = NULL;
+  }
+}
+
 // A speculative viewer math opener without its matching closer is ordinary
 // Markdown. Re-run only that failed block through the block parser, sharing
 // the document's reference maps and deferring all inline work until afterward.
@@ -518,12 +625,26 @@ static void recover_unclosed_formulas(cmark_parser *parser) {
       while (retry->current != retry->root)
         retry->current = finalize(retry, retry->current);
       finalize(retry, retry->root);
+      bufsize_t *lines = NULL;
+      int line_count = 1;
+      if (node->source_map_count) {
+        for (bufsize_t i = 0; i < node->len; ++i)
+          if (node->data[i] == '\n')
+            ++line_count;
+        lines = (bufsize_t *)parser->mem->calloc((size_t)line_count + 1, sizeof(bufsize_t));
+        int line = 1;
+        for (bufsize_t i = 0; i < node->len; ++i)
+          if (node->data[i] == '\n')
+            lines[line++] = i + 1;
+        lines[line_count] = node->len;
+      }
       cmark_iter *iter = cmark_iter_new(retry->root);
       cmark_event_type event;
       while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
         cmark_node *child = cmark_iter_get_node(iter);
         if (event != CMARK_EVENT_ENTER || child == retry->root)
           continue;
+        remap_formula_child(child, node, lines, line_count);
         child->start_line += node->start_line - 1;
         child->end_line += node->start_line - 1;
         if (child->content_start_line)
@@ -534,6 +655,7 @@ static void recover_unclosed_formulas(cmark_parser *parser) {
           child->end_column += node->start_column - 1;
       }
       cmark_iter_free(iter);
+      parser->mem->free(lines);
       cmark_node *first = retry->root->first_child;
       while (retry->root->first_child) {
         cmark_node *child = retry->root->first_child;
@@ -587,6 +709,9 @@ static void process_inline_subtree(cmark_mem *mem, cmark_node *root,
         mem->free(cur->data);
         cur->data = NULL;
         cur->len = 0;
+        mem->free(cur->source_map);
+        cur->source_map = NULL;
+        cur->source_map_count = cur->source_map_capacity = 0;
       }
     }
   }
@@ -862,9 +987,29 @@ static void S_parser_feed(cmark_parser *parser, const unsigned char *buffer,
   }
 }
 
-static void chop_trailing_hashtags(cmark_chunk *ch) {
+static void record_atx_syntax(cmark_node *node, cmark_chunk *input,
+                              int line, bufsize_t start, bufsize_t open_end,
+                              bufsize_t close_start, bufsize_t end) {
+  cmark_source_map map = {0, end, line, 1};
+  cmark_node source = {0};
+  source.source_map = &map;
+  source.source_map_count = 1;
+  cmark_node_set_syntax(node, &source, input->data, end,
+                        start, open_end, close_start, end);
+}
+
+static void chop_trailing_hashtags(cmark_chunk *ch, cmark_node *node,
+                                   cmark_parser *parser) {
   bufsize_t n, orig_n;
 
+  bufsize_t end = ch->len;
+  while (end > 0 && S_is_line_end_char(ch->data[end - 1]))
+    --end;
+  bufsize_t start = node->start_column - 1;
+  bufsize_t open_end = parser->first_nonspace;
+  if (open_end > end)
+    open_end = end;
+  bufsize_t close_start = end;
   cmark_chunk_rtrim(ch);
   orig_n = n = ch->len - 1;
 
@@ -876,7 +1021,14 @@ static void chop_trailing_hashtags(cmark_chunk *ch) {
   if (n != orig_n && n >= 0 && S_is_space_or_tab(peek_at(ch, n))) {
     ch->len = n;
     cmark_chunk_rtrim(ch);
+    close_start = ch->len > open_end ? ch->len : open_end;
   }
+  if (parser->options & CMARK_OPT_SOURCE_SYNTAX)
+    record_atx_syntax(node, ch, parser->line_number, start, open_end, close_start, end);
+  // An all-marker heading may trim back into its already-consumed opener.
+  // Keep the remaining inline input empty, never a negative-length slice.
+  if (ch->len < parser->first_nonspace)
+    ch->len = parser->first_nonspace;
 }
 
 // Check for thematic break.  On failure, return 0 and update
@@ -1541,7 +1693,7 @@ static cmark_node *check_open_blocks(cmark_parser *parser, cmark_chunk *input,
               parser->current->type == CMARK_NODE_FORMULA_BLOCK ||
               parser->current->type == CMARK_NODE_FRONTMATTER ||
               parser->current->type == CMARK_NODE_HTML_BLOCK) {
-            add_line(input, parser);
+            add_line(input, parser, parser->current);
           }
           return NULL;
         }
@@ -1675,6 +1827,9 @@ static bool parse_table_row_cells_scan_row_helper(table_row_scan_context *contex
     cell_node->data =
         (unsigned char *)context->parser->mem->calloc(cell_node->len + 1, 1);
     memcpy(cell_node->data, cell_content, cell_node->len);
+    if (context->parser->options & CMARK_OPT_SOURCE_SYNTAX)
+      cmark_node_add_source_map(cell_node, 0, cell_node->len,
+                                cell_node->start_line, cell_node->start_column);
 
     cell_node->as.table_cell.idx = cols;
     cell_node->as.table_cell.is_delimiter = false;
@@ -1838,6 +1993,14 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
     cmark_strbuf_truncate(&parser->content, line_offset);
     cmark_node *paragraph = make_block(parser->mem, CMARK_NODE_PARAGRAPH,
                                        paragraph_start_line, paragraph_start_column);
+    paragraph->source_map = container->source_map;
+    paragraph->source_map_count = container->source_map_count;
+    paragraph->source_map_capacity = container->source_map_capacity;
+    while (paragraph->source_map_count &&
+           paragraph->source_map[paragraph->source_map_count - 1].offset >= line_offset)
+      --paragraph->source_map_count;
+    container->source_map = NULL;
+    container->source_map_count = container->source_map_capacity = 0;
     paragraph->flags &= ~CMARK_NODE__OPEN;
     paragraph->end_line = container->start_line - 1;
     paragraph->end_column = parser->content_previous_line_length;
@@ -1846,6 +2009,11 @@ static cmark_node *try_opening_new_table_header(cmark_parser *parser, cmark_node
     (void)inserted;
     finalize_paragraph(parser, paragraph);
   }
+
+  // Cells now own their source mappings; the former paragraph map is obsolete.
+  parser->mem->free(container->source_map);
+  container->source_map = NULL;
+  container->source_map_count = container->source_map_capacity = 0;
 
   // Init table data.
   memset(&container->as.table, 0, sizeof(cmark_table));
@@ -2058,6 +2226,18 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
       (*container)->as.heading.level = level;
       (*container)->as.heading.setext = false;
       (*container)->as.heading.internal_offset = matched;
+      bufsize_t source_end = input->len;
+      while (source_end > heading_startpos &&
+             S_is_line_end_char(input->data[source_end - 1]))
+        --source_end;
+      bufsize_t open_end = heading_startpos + matched;
+      while (open_end < source_end && S_is_space_or_tab(input->data[open_end]))
+        ++open_end;
+      if (open_end > source_end)
+        open_end = source_end;
+      if ((parser->options & CMARK_OPT_SOURCE_SYNTAX) && open_end == source_end)
+        record_atx_syntax(*container, input, parser->line_number,
+                          heading_startpos, open_end, source_end, source_end);
 
     } else if (!indented && (matched = scan_open_code_fence(
                                  input, parser->first_nonspace))) {
@@ -2109,7 +2289,7 @@ static void open_new_blocks(cmark_parser *parser, cmark_node **container,
                (lev =
                     scan_setext_heading_line(input, parser->first_nonspace))) {
       // finalize paragraph, resolving reference links
-      has_content = resolve_reference_link_definitions(parser);
+      has_content = resolve_reference_link_definitions(parser, *container);
 
       if (has_content) {
 
@@ -2349,7 +2529,7 @@ static cmark_node *add_viewer_formula_line(cmark_parser *parser,
     break;
   }
   if (close < 0) {
-    add_line(input, parser);
+    add_line(input, parser, container);
     return container;
   }
   cmark_strbuf_put(&parser->content, input->data + parser->offset,
@@ -2407,7 +2587,7 @@ static void add_text_to_container(cmark_parser *parser, cmark_node *container,
   if (parser->current != last_matched_container &&
       container == last_matched_container && !parser->blank &&
       S_type(parser->current) == CMARK_NODE_PARAGRAPH) {
-    add_line(input, parser);
+    add_line(input, parser, parser->current);
   } else { // not a lazy continuation
     // Finalize any blocks that were not matched and set cur to container:
     while (parser->current != last_matched_container) {
@@ -2421,9 +2601,9 @@ static void add_text_to_container(cmark_parser *parser, cmark_node *container,
     } else if (S_type(container) == CMARK_NODE_CODE_BLOCK ||
                S_type(container) == CMARK_NODE_FORMULA_BLOCK ||
                S_type(container) == CMARK_NODE_FRONTMATTER) {
-      add_line(input, parser);
+      add_line(input, parser, container);
     } else if (S_type(container) == CMARK_NODE_HTML_BLOCK) {
-      add_line(input, parser);
+      add_line(input, parser, container);
 
       int matches_end_condition;
       switch (container->as.html_block_type) {
@@ -2466,18 +2646,18 @@ static void add_text_to_container(cmark_parser *parser, cmark_node *container,
     } else if (accepts_lines(S_type(container))) {
       if (S_type(container) == CMARK_NODE_HEADING &&
           container->as.heading.setext == false) {
-        chop_trailing_hashtags(input);
+        chop_trailing_hashtags(input, container, parser);
       }
       S_advance_offset(parser, input, parser->first_nonspace - parser->offset,
                        false);
-      add_line(input, parser);
+      add_line(input, parser, container);
     } else {
       // create paragraph container for line
       container = add_child(parser, container, CMARK_NODE_PARAGRAPH,
                             parser->first_nonspace + 1);
       S_advance_offset(parser, input, parser->first_nonspace - parser->offset,
                        false);
-      add_line(input, parser);
+      add_line(input, parser, container);
     }
 
     parser->current = container;

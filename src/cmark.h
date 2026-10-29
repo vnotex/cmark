@@ -481,6 +481,25 @@ CMARK_EXPORT int cmark_node_get_end_line(cmark_node *node);
  */
 CMARK_EXPORT int cmark_node_get_end_column(cmark_node *node);
 
+/** Exact parser-consumed syntax, independent of approximate inline source
+ * columns. Requires CMARK_OPT_SOURCE_SYNTAX. Coordinates are one-based
+ * original UTF-8 byte columns; the extent
+ * end is exclusive. Available for emphasis/strong/strike/mark, code, Markdown
+ * links and explicit autolinks (not linkified text), ATX headings, and inline
+ * formulas. Zero/NULL means absent. Spans never include line endings or stripped
+ * container prefixes. Returned raw bytes remain valid until the node is freed;
+ * they are not NUL terminated and should be verified against the source before
+ * source-preserving display transformations. Programmatically created nodes
+ * have no syntax metadata.
+ */
+CMARK_EXPORT int cmark_node_get_syntax_extent(cmark_node *node, int *start_line,
+                                             int *start_column, int *end_line,
+                                             int *end_column);
+CMARK_EXPORT int cmark_node_get_syntax_span_count(cmark_node *node);
+CMARK_EXPORT const char *cmark_node_get_syntax_span(cmark_node *node, int index,
+                                                  int *line, int *column,
+                                                  int *length);
+
 /**
  * ## Tree Manipulation
  */
@@ -764,6 +783,10 @@ char *cmark_render_latex(cmark_node *root, int options, int width);
 /** Shared viewer grammar: optional table edges, image percentages, math tags.
  */
 #define CMARK_OPT_VIEWER_COMPAT (1 << 21)
+/** Retain exact consumed syntax for source-preserving editor transformations.
+ * Does not alter the grammar or renderer output. Off for render-only parses.
+ */
+#define CMARK_OPT_SOURCE_SYNTAX (1 << 22)
 #define CMARK_OPT_VIEWER                                                       \
   (CMARK_OPT_SUBSCRIPT | CMARK_OPT_SUPERSCRIPT | CMARK_OPT_TASKLISTS |         \
    CMARK_OPT_ALERTS | CMARK_OPT_TOC | CMARK_OPT_MATH_RAW |                     \

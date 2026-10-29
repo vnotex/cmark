@@ -64,6 +64,7 @@ typedef struct {
   int line;
   bufsize_t pos;
   int block_offset;
+  cmark_node *source;
   int column_offset;
   cmark_reference_map *refmap;
   cmark_footnote_map *footnote_map;
@@ -205,6 +206,8 @@ static inline cmark_node *make_autolink(subject *subj, int start_column,
                       &link->as.link.url_start_line, &link->as.link.url_start_column);
   subj_line_column_at(subj, start_column, end_column - 1,
                       &link->as.link.url_end_line, &link->as.link.url_end_column);
+  cmark_node_set_syntax(link, subj->source, subj->input.data, subj->input.len,
+                        start_column, start_column + 1, end_column, end_column + 1);
   append_child(link, make_str_with_entities(subj, start_column + 1, end_column - 1, &url));
   return link;
 }
@@ -219,6 +222,7 @@ static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, 
   e->line = line_number;
   e->pos = 0;
   e->block_offset = block_offset;
+  e->source = NULL;
   e->column_offset = 0;
   e->refmap = refmap;
   e->footnote_map = footnote_map;
@@ -600,6 +604,8 @@ static cmark_node *handle_backticks(subject *subj) {
                                     endpos - 1);
     node->len = buf.size;
     node->data = cmark_strbuf_detach(&buf);
+    cmark_node_set_syntax(node, subj->source, subj->input.data, subj->input.len,
+                          initpos, startpos, endpos - openticks.len, endpos);
     adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len);
     return node;
   }
@@ -666,6 +672,8 @@ try_match:
 
   cmark_node *node = make_literal(subj, CMARK_NODE_FORMULA_INLINE, startpos,
                                    endpos - fence_length - 1);
+  cmark_node_set_syntax(node, subj->source, subj->input.data, subj->input.len,
+                        initpos, startpos, endpos - fence_length, endpos);
   node->as.formula.fence_length = (uint8_t)fence_length;
   node->as.formula.viewer = (options & CMARK_OPT_VIEWER_COMPAT) != 0;
   node->len = buf.size;
@@ -1116,6 +1124,11 @@ static delimiter *S_insert_emph_like_inline(subject *subj, delimiter *opener,
     break;
   }
 
+  bufsize_t syntax_start = opener->position - opener->length + opener_num_chars;
+  bufsize_t syntax_end = closer->position - closer_num_chars;
+  cmark_node_set_syntax(emph, subj->source, subj->input.data, subj->input.len,
+                        syntax_start, syntax_start + use_delims,
+                        syntax_end - use_delims, syntax_end);
   tmp = opener_inl->next;
   if (tmp && tmp != closer_inl) {
     emph->first_child = tmp;
@@ -1668,6 +1681,10 @@ match:
   inl->as.link.title = title;
   inl->as.link.width = width;
   inl->as.link.height = height;
+  if (!is_image)
+    cmark_node_set_syntax(inl, subj->source, subj->input.data, subj->input.len,
+                          opener->position - 1, opener->position,
+                          initial_pos - 1, subj->pos);
   if (is_image && size_end) {
     inl->as.link.width_text = copy_span(
         subj->mem, subj->input.data + size_start, size_split - size_start);
@@ -2775,6 +2792,7 @@ void cmark_parse_inlines(cmark_mem *mem, cmark_node *parent,
   int content_line = parent->content_start_line ? parent->content_start_line : parent->start_line;
   subject_from_buf(mem, content_line, parent->start_column - 1 + internal_offset,
                    &subj, &content, refmap, footnote_map);
+  subj.source = (options & CMARK_OPT_SOURCE_SYNTAX) ? parent : NULL;
   cmark_chunk_rtrim(&subj.input);
   subj.unescape_table_pipes = parent->type == CMARK_NODE_TABLE_CELL &&
                               (options & CMARK_OPT_VIEWER_COMPAT);

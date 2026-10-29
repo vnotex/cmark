@@ -124,6 +124,33 @@ enum cmark_node__internal_flags {
   CMARK_NODE__UNCLOSED_FORMULA = (1 << 5),
 };
 
+// Exact byte-preserving portions of a block's inline input. Synthetic tab
+// padding and normalized line endings are deliberately not mapped.
+typedef struct {
+  bufsize_t offset;
+  bufsize_t length;
+  int line;
+  int column;
+} cmark_source_map;
+
+typedef struct {
+  int line;
+  int column;
+  int length;
+  const unsigned char *text;
+} cmark_syntax_span;
+
+typedef struct {
+  int start_line;
+  int start_column;
+  int end_line;
+  int end_column;
+  int count;
+  // The span array and its raw verification bytes share this allocation.
+  // The pointer also gives the header the span array's required alignment.
+  cmark_syntax_span *spans;
+} cmark_syntax;
+
 struct cmark_node {
   cmark_mem *mem;
 
@@ -141,6 +168,10 @@ struct cmark_node {
   // First retained content line after reference definitions are removed.
   // Keep start_line/start_column as the original block-prefix coordinate anchor.
   int content_start_line;
+  cmark_source_map *source_map;
+  int source_map_count;
+  int source_map_capacity;
+  cmark_syntax *syntax;
   int start_line;
   int start_column;
   int end_line;
@@ -164,6 +195,14 @@ struct cmark_node {
     cmark_footnote_ref footnote_ref;
   } as;
 };
+
+void cmark_node_add_source_map(cmark_node *node, bufsize_t offset,
+                               bufsize_t length, int line, int column);
+void cmark_node_drop_source_map(cmark_node *node, bufsize_t length);
+void cmark_node_set_syntax(cmark_node *node, cmark_node *source,
+                           const unsigned char *data, bufsize_t length,
+                           bufsize_t start, bufsize_t open_end,
+                           bufsize_t close_start, bufsize_t end);
 
 CMARK_EXPORT int cmark_node_check(cmark_node *node, FILE *out);
 

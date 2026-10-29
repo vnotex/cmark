@@ -214,6 +214,8 @@ static void S_free_nodes(cmark_node *e) {
       e->next = e->first_child;
     }
     next = e->next;
+    mem->free(e->source_map);
+    mem->free(e->syntax);
     mem->free(e);
     e = next;
   }
@@ -858,6 +860,152 @@ int cmark_node_get_end_column(cmark_node *node) {
     return 0;
   }
   return node->end_column;
+}
+
+void cmark_node_add_source_map(cmark_node *node, bufsize_t offset,
+                               bufsize_t length, int line, int column) {
+  if (length <= 0)
+    return;
+  if (node->source_map_count == node->source_map_capacity) {
+    int capacity = node->source_map_capacity ? node->source_map_capacity * 2 : 1;
+    node->source_map = (cmark_source_map *)node->mem->realloc(
+        node->source_map, (size_t)capacity * sizeof(cmark_source_map));
+    node->source_map_capacity = capacity;
+  }
+  cmark_source_map *entry = &node->source_map[node->source_map_count++];
+  entry->offset = offset;
+  entry->length = length;
+  entry->line = line;
+  entry->column = column;
+}
+
+void cmark_node_drop_source_map(cmark_node *node, bufsize_t length) {
+  int count = 0;
+  for (int i = 0; i < node->source_map_count; ++i) {
+    cmark_source_map entry = node->source_map[i];
+    if (entry.offset + entry.length <= length)
+      continue;
+    if (entry.offset < length) {
+      bufsize_t consumed = length - entry.offset;
+      entry.column += consumed;
+      entry.length -= consumed;
+      entry.offset = length;
+    }
+    entry.offset -= length;
+    node->source_map[count++] = entry;
+  }
+  node->source_map_count = count;
+}
+
+static int source_map_index(cmark_node *source, bufsize_t offset) {
+  int first = 0, last = source->source_map_count;
+  while (first < last) {
+    int mid = first + (last - first) / 2;
+    if (source->source_map[mid].offset <= offset)
+      first = mid + 1;
+    else
+      last = mid;
+  }
+  return first - 1;
+}
+
+void cmark_node_set_syntax(cmark_node *node, cmark_node *source,
+                           const unsigned char *data, bufsize_t length,
+                           bufsize_t start, bufsize_t open_end,
+                           bufsize_t close_start, bufsize_t end) {
+  if (!source || start < 0 || open_end <= start || close_start < open_end ||
+      end < close_start || end > length)
+    return;
+  int first = source_map_index(source, start);
+  int last = source_map_index(source, end - 1);
+  if (first < 0 || last < 0)
+    return;
+  const cmark_source_map *begin = &source->source_map[first];
+  const cmark_source_map *finish = &source->source_map[last];
+  if (start >= begin->offset + begin->length ||
+      end > finish->offset + finish->length)
+    return;
+
+  const bufsize_t starts[2] = {start, close_start};
+  const bufsize_t ends[2] = {open_end, end};
+  int count = 0;
+  size_t bytes = 0;
+  for (int r = 0; r < 2; ++r) {
+    for (int i = source_map_index(source, starts[r]);
+         i >= 0 && i < source->source_map_count; ++i) {
+      const cmark_source_map *entry = &source->source_map[i];
+      if (entry->offset >= ends[r])
+        break;
+      bufsize_t from = starts[r] > entry->offset ? starts[r] : entry->offset;
+      bufsize_t to = ends[r] < entry->offset + entry->length
+                        ? ends[r] : entry->offset + entry->length;
+      if (from < to) {
+        ++count;
+        bytes += (size_t)(to - from);
+      }
+    }
+  }
+  if (!count)
+    return;
+  cmark_syntax *syntax = (cmark_syntax *)node->mem->calloc(
+      1, sizeof(cmark_syntax) + (size_t)count * sizeof(cmark_syntax_span) + bytes);
+  syntax->start_line = begin->line;
+  syntax->start_column = begin->column + start - begin->offset;
+  syntax->end_line = finish->line;
+  syntax->end_column = finish->column + end - finish->offset;
+  syntax->count = count;
+  cmark_syntax_span *spans = syntax->spans = (cmark_syntax_span *)(syntax + 1);
+  unsigned char *text = (unsigned char *)(spans + count);
+  count = 0;
+  for (int r = 0; r < 2; ++r) {
+    for (int i = source_map_index(source, starts[r]);
+         i >= 0 && i < source->source_map_count; ++i) {
+      const cmark_source_map *entry = &source->source_map[i];
+      if (entry->offset >= ends[r])
+        break;
+      bufsize_t from = starts[r] > entry->offset ? starts[r] : entry->offset;
+      bufsize_t to = ends[r] < entry->offset + entry->length
+                        ? ends[r] : entry->offset + entry->length;
+      if (from < to) {
+        cmark_syntax_span *span = &spans[count++];
+        span->line = entry->line;
+        span->column = entry->column + from - entry->offset;
+        span->length = to - from;
+        span->text = text;
+        memcpy(text, data + from, span->length);
+        text += span->length;
+      }
+    }
+  }
+  node->mem->free(node->syntax);
+  node->syntax = syntax;
+}
+
+int cmark_node_get_syntax_extent(cmark_node *node, int *start_line,
+                                int *start_column, int *end_line, int *end_column) {
+  if (!node || !node->syntax || !start_line || !start_column || !end_line || !end_column)
+    return 0;
+  *start_line = node->syntax->start_line;
+  *start_column = node->syntax->start_column;
+  *end_line = node->syntax->end_line;
+  *end_column = node->syntax->end_column;
+  return 1;
+}
+
+int cmark_node_get_syntax_span_count(cmark_node *node) {
+  return node && node->syntax ? node->syntax->count : 0;
+}
+
+const char *cmark_node_get_syntax_span(cmark_node *node, int index,
+                                     int *line, int *column, int *length) {
+  if (!node || !node->syntax || index < 0 || index >= node->syntax->count ||
+      !line || !column || !length)
+    return NULL;
+  const cmark_syntax_span *spans = node->syntax->spans;
+  *line = spans[index].line;
+  *column = spans[index].column;
+  *length = spans[index].length;
+  return (const char *)spans[index].text;
 }
 
 // Unlink a node without adjusting its next, prev, and parent pointers.
